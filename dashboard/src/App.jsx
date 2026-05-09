@@ -1,122 +1,99 @@
-import { useState } from 'react'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import './App.css'
+import { useState, useEffect } from 'react';
+import ChartComponent from './ChartComponent';
+import './App.css';
 
 function App() {
-  const [count, setCount] = useState(0)
+  const [isConnected, setIsConnected] = useState(false);
+  const [latestTick, setLatestTick] = useState(null);
+  const [trades, setTrades] = useState([]);
+  const [symbol] = useState('btcusdt');
+
+  useEffect(() => {
+    // Initial fetch of trades via REST API
+    fetch('http://localhost:8000/api/trades')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.trades) {
+          setTrades(data.trades);
+        }
+      })
+      .catch((err) => console.error("Failed to fetch initial trades:", err));
+
+    // Connect to WebSocket
+    const ws = new WebSocket('ws://localhost:8000/ws');
+
+    ws.onopen = () => {
+      setIsConnected(true);
+      console.log('Connected to API Gateway WebSocket');
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.channel.startsWith('ticks:')) {
+          setLatestTick(msg.data);
+        } else if (msg.channel === 'executed_trades') {
+          // Prepend new trade to the list
+          setTrades(prev => [msg.data, ...prev].slice(0, 50));
+        }
+      } catch (err) {
+        console.error("Failed to parse websocket message", err);
+      }
+    };
+
+    ws.onclose = () => {
+      setIsConnected(false);
+      console.log('Disconnected from API Gateway WebSocket');
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, []);
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
+      <h1>CryptoScalper Pro Dashboard</h1>
+      <div style={{ marginBottom: '20px' }}>
+        Status: <span style={{ color: isConnected ? 'green' : 'red', fontWeight: 'bold' }}>
+          {isConnected ? 'Connected' : 'Disconnected'}
+        </span>
+      </div>
 
-      <div className="ticks"></div>
+      <ChartComponent symbol={symbol} tickData={latestTick} />
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      <div style={{ marginTop: '40px' }}>
+        <h2>Recent Trades</h2>
+        <table style={{ width: '100%', textAlign: 'left', borderCollapse: 'collapse' }}>
+          <thead>
+            <tr style={{ borderBottom: '1px solid #444' }}>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th>Price</th>
+              <th>Quantity</th>
+            </tr>
+          </thead>
+          <tbody>
+            {trades.map((trade, i) => (
+              <tr key={i} style={{ borderBottom: '1px solid #333' }}>
+                <td>{trade.symbol || (trade.order && trade.order.symbol)}</td>
+                <td style={{ color: (trade.side || (trade.order && trade.order.type)) === 'BUY' ? '#00e676' : '#ff5252' }}>
+                  {trade.side || (trade.order && trade.order.type)}
+                </td>
+                <td>${trade.price || (trade.order && trade.order.price)}</td>
+                <td>{trade.quantity || (trade.order && trade.order.quantity) || 'N/A'}</td>
+              </tr>
+            ))}
+            {trades.length === 0 && (
+              <tr>
+                <td colSpan="4" style={{ textAlign: 'center', padding: '10px' }}>No trades executed yet.</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
-export default App
+export default App;

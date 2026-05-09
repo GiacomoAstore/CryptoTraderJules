@@ -9,7 +9,7 @@ app = FastAPI(title="CryptoScalper API Gateway")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -38,8 +38,14 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+from repository import TimescaleTradeRepository
+
+trade_repo = TimescaleTradeRepository()
+
 @app.on_event("startup")
 async def startup_event():
+    # Connect to TimescaleDB
+    await trade_repo.connect()
     # Start Redis listener in background
     asyncio.create_task(redis_listener())
 
@@ -52,12 +58,30 @@ async def redis_listener():
         if message["type"] in ["message", "pmessage"]:
             data = json.loads(message["data"])
             channel = message.get("channel", "")
+
+            # Persist executed trades to DB
+            if channel == "executed_trades":
+                try:
+                    await trade_repo.insert_trade(data)
+                except Exception as e:
+                    print(f"Failed to save trade to DB: {e}")
+
             ws_msg = json.dumps({"channel": channel, "data": data})
             await manager.broadcast(ws_msg)
 
 @app.get("/")
 def read_root():
     return {"status": "ok", "service": "CryptoScalper API Gateway"}
+
+@app.get("/api/trades")
+async def get_trades(limit: int = 50):
+    trades = await trade_repo.get_recent_trades(limit=limit)
+    return {"status": "ok", "trades": trades}
+
+@app.get("/api/trades/{symbol}")
+async def get_trades_by_symbol(symbol: str, limit: int = 50):
+    trades = await trade_repo.get_trades_by_symbol(symbol=symbol.upper(), limit=limit)
+    return {"status": "ok", "trades": trades}
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
