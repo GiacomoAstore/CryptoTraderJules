@@ -13,7 +13,7 @@ REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
 async def binance_websocket_consumer(redis_client):
-    uri = f"wss://stream.binance.com:9443/ws/{'@ticker/'.join(SYMBOLS)}@ticker"
+    uri = f"wss://stream.binance.com:9443/stream?streams={'@ticker/'.join(SYMBOLS)}@ticker"
     logger.info(f"Connecting to Binance WS: {uri}")
 
     while True:
@@ -22,14 +22,18 @@ async def binance_websocket_consumer(redis_client):
                 logger.info("Connected to Binance WebSocket.")
                 while True:
                     message = await websocket.recv()
-                    data = json.loads(message)
+                    payload = json.loads(message)
+                    data = payload.get("data", {})
+                    if not data:
+                        continue
                     # Normalize tick (simplified)
                     tick = {
                         "symbol": data.get("s"),
                         "price": float(data.get("c", 0)),
                         "timestamp": data.get("E")
                     }
-                    await redis_client.publish(f"ticks:{tick['symbol']}", json.dumps(tick))
+                    if tick["symbol"]:
+                        await redis_client.publish(f"ticks:{tick['symbol']}", json.dumps(tick))
         except Exception as e:
             logger.error(f"WebSocket error: {e}. Reconnecting in 5s...")
             await asyncio.sleep(5)

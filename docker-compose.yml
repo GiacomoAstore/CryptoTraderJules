@@ -1,11 +1,10 @@
-version: '3.8'
-
 services:
   data_ingestion:
     build: ./data_ingestion
     container_name: cryptoscalper_data_ingestion
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       redis:
         condition: service_healthy
@@ -17,7 +16,8 @@ services:
     build: ./signal_engine
     container_name: cryptoscalper_signal_engine
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       redis:
         condition: service_healthy
@@ -29,7 +29,8 @@ services:
     build: ./risk_manager
     container_name: cryptoscalper_risk_manager
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       redis:
         condition: service_healthy
@@ -41,7 +42,8 @@ services:
     build: ./order_executor
     container_name: cryptoscalper_order_executor
     env_file:
-      - .env
+      - path: .env
+        required: false
     depends_on:
       redis:
         condition: service_healthy
@@ -55,7 +57,8 @@ services:
     build: ./api_gateway
     container_name: cryptoscalper_api_gateway
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "8000:8000"
     depends_on:
