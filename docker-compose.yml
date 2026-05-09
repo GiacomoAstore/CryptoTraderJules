@@ -1,0 +1,120 @@
+version: '3.8'
+
+services:
+  data_ingestion:
+    build: ./data_ingestion
+    container_name: cryptoscalper_data_ingestion
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - cryptoscalper_net
+    restart: unless-stopped
+
+  signal_engine:
+    build: ./signal_engine
+    container_name: cryptoscalper_signal_engine
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - cryptoscalper_net
+    restart: unless-stopped
+
+  risk_manager:
+    build: ./risk_manager
+    container_name: cryptoscalper_risk_manager
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - cryptoscalper_net
+    restart: unless-stopped
+
+  order_executor:
+    build: ./order_executor
+    container_name: cryptoscalper_order_executor
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - cryptoscalper_net
+    restart: unless-stopped
+
+  api_gateway:
+    build: ./api_gateway
+    container_name: cryptoscalper_api_gateway
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - cryptoscalper_net
+    restart: unless-stopped
+
+  dashboard:
+    build: ./dashboard
+    container_name: cryptoscalper_dashboard
+    ports:
+      - "3000:80"
+    depends_on:
+      - api_gateway
+    networks:
+      - cryptoscalper_net
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: cryptoscalper_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - cryptoscalper_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: cryptoscalper_timescaledb
+    environment:
+      POSTGRES_USER: ${DB_USER:-crypto_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-crypto_pass}
+      POSTGRES_DB: ${DB_NAME:-cryptoscalper_db}
+    ports:
+      - "5432:5432"
+    networks:
+      - cryptoscalper_net
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-crypto_user} -d ${DB_NAME:-cryptoscalper_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+networks:
+  cryptoscalper_net:
+    driver: bridge
+
+volumes:
+  timescaledb_data:

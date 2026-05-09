@@ -1,0 +1,15 @@
+# Ignore generated environment files
+.env
+
+# Python caching
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dependencies
+node_modules/
+dist/
+
+# Build artifacts and Docker
+.DS_Store
