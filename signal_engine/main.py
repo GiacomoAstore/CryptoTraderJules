@@ -8,7 +8,7 @@ from strategy import EmaCrossoverStrategy
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SignalEngine")
 
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
 async def main():
