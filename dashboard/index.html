@@ -7,6 +7,19 @@
     <title>dashboard</title>
   </head>
   <body>
+    <div id="error-log" style="position: fixed; top: 0; left: 0; right: 0; background: red; color: white; z-index: 9999; white-space: pre-wrap; font-family: monospace; padding: 10px; display: none;"></div>
+    <script>
+      window.addEventListener('error', function(e) {
+        var el = document.getElementById('error-log');
+        el.style.display = 'block';
+        el.textContent += e.message + '\\n' + (e.error ? e.error.stack : '') + '\\n\\n';
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        var el = document.getElementById('error-log');
+        el.style.display = 'block';
+        el.textContent += 'Unhandled Promise Rejection: ' + e.reason + '\\n\\n';
+      });
+    </script>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
   </body>

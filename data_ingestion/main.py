@@ -2,45 +2,153 @@ import asyncio
 import json
 import logging
 import os
+import time
+from typing import TypedDict, Optional
+from collections import defaultdict
 import redis.asyncio as redis
 import websockets
+from pythonjsonlogger import jsonlogger
 
-logging.basicConfig(level=logging.INFO)
+# Setup structured logging
 logger = logging.getLogger("DataIngestion")
+logger.setLevel(logging.INFO)
+logHandler = logging.StreamHandler()
+formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(message)s')
+logHandler.setFormatter(formatter)
+logger.addHandler(logHandler)
 
 SYMBOLS = ["btcusdt", "ethusdt", "bnbusdt", "solusdt", "xrpusdt"]
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
+class NormalizedTick(TypedDict):
+    symbol: str
+    price: float
+    qty: float
+    side: str
+    timestamp_ms: int
+    bid_price: float
+    ask_price: float
+    bid_qty: float
+    ask_qty: float
+
+# Local state to hold the latest bid/ask and price
+state = defaultdict(lambda: {
+    "price": 0.0,
+    "qty": 0.0,
+    "side": "UNKNOWN",
+    "bid_price": 0.0,
+    "ask_price": 0.0,
+    "bid_qty": 0.0,
+    "ask_qty": 0.0,
+    "timestamp_ms": 0
+})
+
+async def heartbeat_publisher(redis_client):
+    """Publishes a heartbeat to Redis every 30 seconds."""
+    while True:
+        try:
+            await redis_client.set("ingestion:heartbeat", int(time.time() * 1000))
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error("Heartbeat publisher error", extra={"error": str(e)})
+            await asyncio.sleep(5)
+
+async def publish_tick(redis_client, symbol: str):
+    s = state[symbol]
+    tick: NormalizedTick = {
+        "symbol": symbol.upper(),
+        "price": s["price"],
+        "qty": s["qty"],
+        "side": s["side"],
+        "timestamp_ms": s["timestamp_ms"],
+        "bid_price": s["bid_price"],
+        "ask_price": s["ask_price"],
+        "bid_qty": s["bid_qty"],
+        "ask_qty": s["ask_qty"]
+    }
+    tick_json = json.dumps(tick)
+    
+    # Cache the last tick with TTL 10 seconds
+    await redis_client.setex(f"tick:last:{symbol.upper()}", 10, tick_json)
+    # Publish to Pub/Sub
+    await redis_client.publish(f"ticks:{symbol.upper()}", tick_json)
+
 async def binance_websocket_consumer(redis_client):
-    uri = f"wss://stream.binance.com:9443/stream?streams={'@ticker/'.join(SYMBOLS)}@ticker"
-    logger.info(f"Connecting to Binance WS: {uri}")
+    streams = []
+    for s in SYMBOLS:
+        streams.append(f"{s}@trade")
+        streams.append(f"{s}@depth20@100ms")
+        streams.append(f"{s}@bookTicker")
+    
+    stream_param = '/'.join(streams)
+    uri = f"wss://stream.binance.com:9443/stream?streams={stream_param}"
+    
+    backoff = 1
+    max_backoff = 30
 
     while True:
+        logger.info("Connecting to Binance WS", extra={"uri": uri})
         try:
             async with websockets.connect(uri) as websocket:
                 logger.info("Connected to Binance WebSocket.")
+                backoff = 1 # reset backoff on successful connection
+                
                 while True:
                     message = await websocket.recv()
                     payload = json.loads(message)
+                    stream_name = payload.get("stream", "")
                     data = payload.get("data", {})
+                    
                     if not data:
                         continue
-                    # Normalize tick (simplified)
-                    tick = {
-                        "symbol": data.get("s"),
-                        "price": float(data.get("c", 0)),
-                        "timestamp": data.get("E")
-                    }
-                    if tick["symbol"]:
-                        await redis_client.publish(f"ticks:{tick['symbol']}", json.dumps(tick))
+                        
+                    symbol = data.get("s", "").lower()
+                    if not symbol:
+                        continue
+
+                    if "@trade" in stream_name:
+                        state[symbol]["price"] = float(data.get("p", 0))
+                        state[symbol]["qty"] = float(data.get("q", 0))
+                        state[symbol]["side"] = "SELL" if data.get("m") else "BUY"
+                        state[symbol]["timestamp_ms"] = data.get("E", int(time.time() * 1000))
+                        await publish_tick(redis_client, symbol)
+                        
+                    elif "@bookTicker" in stream_name:
+                        state[symbol]["bid_price"] = float(data.get("b", 0))
+                        state[symbol]["bid_qty"] = float(data.get("B", 0))
+                        state[symbol]["ask_price"] = float(data.get("a", 0))
+                        state[symbol]["ask_qty"] = float(data.get("A", 0))
+                        state[symbol]["timestamp_ms"] = int(time.time() * 1000)
+                        await publish_tick(redis_client, symbol)
+
+                    elif "@depth20" in stream_name:
+                        # Orderbook level 20 for full snapshot if needed by other services
+                        depth = {
+                            "symbol": symbol.upper(),
+                            "bids": [[float(p), float(q)] for p, q in data.get("b", [])],
+                            "asks": [[float(p), float(q)] for p, q in data.get("a", [])],
+                            "timestamp": data.get("E", int(time.time() * 1000))
+                        }
+                        depth_json = json.dumps(depth)
+                        await redis_client.setex(f"orderbook:{symbol.upper()}", 10, depth_json)
+                        await redis_client.publish(f"orderbook:{symbol.upper()}", depth_json)
+
         except Exception as e:
-            logger.error(f"WebSocket error: {e}. Reconnecting in 5s...")
-            await asyncio.sleep(5)
+            logger.error("WebSocket connection lost", extra={"error": str(e), "backoff_seconds": backoff})
+            await asyncio.sleep(backoff)
+            backoff = min(max_backoff, backoff * 2)
 
 async def main():
     logger.info(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    
+    # Start heartbeat task
+    asyncio.create_task(heartbeat_publisher(redis_client))
+    
+    # Start consumer
     await binance_websocket_consumer(redis_client)
 
 if __name__ == "__main__":

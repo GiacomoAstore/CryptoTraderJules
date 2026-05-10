@@ -1,0 +1,28 @@
+strategies:
+  - name: "EmaCrossoverStrategy"
+    enabled: true
+    weight: 1
+    params:
+      fast_period: 5
+      slow_period: 20
+
+  - name: "OrderBookImbalanceStrategy"
+    enabled: true
+    weight: 1
+    params:
+      imbalance_threshold: 1.5
+
+  - name: "VWAPDeviationStrategy"
+    enabled: true
+    weight: 1
+    params:
+      deviation_threshold: 0.005
+
+  - name: "MomentumBurstStrategy"
+    enabled: true
+    weight: 1
+    params:
+      volume_surge_threshold: 3.0
+
+consensus:
+  threshold: 2

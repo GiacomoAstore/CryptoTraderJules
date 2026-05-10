@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   data_ingestion:
     build: ./data_ingestion
@@ -23,6 +25,8 @@ services:
         condition: service_healthy
     networks:
       - cryptoscalper_net
+    volumes:
+      - ./shared_config:/app/shared_config
     restart: unless-stopped
 
   risk_manager:
@@ -36,6 +40,8 @@ services:
         condition: service_healthy
     networks:
       - cryptoscalper_net
+    volumes:
+      - ./shared_config:/app/shared_config
     restart: unless-stopped
 
   order_executor:
@@ -53,6 +59,23 @@ services:
       - cryptoscalper_net
     restart: unless-stopped
 
+  llm_optimizer:
+    build: ./llm_optimizer
+    container_name: cryptoscalper_llm_optimizer
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - cryptoscalper_net
+    volumes:
+      - ./shared_config:/app/shared_config
+    restart: unless-stopped
+
   api_gateway:
     build: ./api_gateway
     container_name: cryptoscalper_api_gateway
@@ -68,6 +91,12 @@ services:
         condition: service_healthy
     networks:
       - cryptoscalper_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
     restart: unless-stopped
 
   dashboard:
@@ -77,6 +106,19 @@ services:
       - "3000:80"
     depends_on:
       - api_gateway
+    networks:
+      - cryptoscalper_net
+    restart: unless-stopped
+
+  telegram_alerter:
+    build: ./telegram_alerter
+    container_name: cryptoscalper_telegram_alerter
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      redis:
+        condition: service_healthy
     networks:
       - cryptoscalper_net
     restart: unless-stopped
