@@ -4,6 +4,8 @@ import asyncio
 import json
 import os
 import redis.asyncio as redis
+import urllib.request
+import urllib.parse
 
 app = FastAPI(title="CryptoScalper API Gateway")
 
@@ -49,10 +51,24 @@ async def startup_event():
     # Start Redis listener in background
     asyncio.create_task(redis_listener())
 
+def send_telegram_alert(message: str):
+    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not bot_token or not chat_id or bot_token == "your_telegram_token":
+        return
+
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    data = urllib.parse.urlencode({'chat_id': chat_id, 'text': message}).encode('utf-8')
+    try:
+        req = urllib.request.Request(url, data=data)
+        urllib.request.urlopen(req, timeout=5)
+    except Exception as e:
+        print(f"Failed to send telegram alert: {e}")
+
 async def redis_listener():
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     pubsub = redis_client.pubsub()
-    await pubsub.psubscribe("executed_trades", "signals", "ticks:*")
+    await pubsub.psubscribe("executed_trades", "signals", "ticks:*", "alerts")
 
     async for message in pubsub.listen():
         if message["type"] in ["message", "pmessage"]:
@@ -65,6 +81,11 @@ async def redis_listener():
                     await trade_repo.insert_trade(data)
                 except Exception as e:
                     print(f"Failed to save trade to DB: {e}")
+
+            if channel == "alerts":
+                # Assuming data is a dict with a "message" key
+                msg_text = data.get("message", str(data))
+                asyncio.get_event_loop().run_in_executor(None, send_telegram_alert, msg_text)
 
             ws_msg = json.dumps({"channel": channel, "data": data})
             await manager.broadcast(ws_msg)
