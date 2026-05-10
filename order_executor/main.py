@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import redis.asyncio as redis
 from abc import ABC, abstractmethod
 
@@ -35,6 +36,12 @@ class ExecuteOrderCommand(Command):
         return self.order_data
 
 async def main():
+    # PAPER_TRADING safety guard constraint
+    paper_trading_mode = os.getenv("TRADING_MODE", "PAPER").upper()
+    if paper_trading_mode != "PAPER":
+        logger.critical("REAL TRADING NOT IMPLEMENTED — set TRADING_MODE=PAPER (or PAPER_TRADING=true)")
+        sys.exit(1)
+
     logger.info(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     pubsub = redis_client.pubsub()

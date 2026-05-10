@@ -41,10 +41,11 @@ export default function ChartComponent({ symbol, tickData }) {
     }, []);
 
     useEffect(() => {
-        if (tickData && tickData.symbol.toLowerCase() === symbol.toLowerCase() && lineSeriesRef.current) {
+        // Only process trade ticks that contain a valid price and timestamp_ms
+        if (tickData && tickData.symbol.toLowerCase() === symbol.toLowerCase() && lineSeriesRef.current && tickData.price !== undefined && tickData.timestamp_ms !== undefined) {
             // Update chart with new tick
             // lightweight-charts expects time in seconds (UNIX timestamp)
-            const time = Math.floor(tickData.timestamp / 1000);
+            const time = Math.floor(tickData.timestamp_ms / 1000);
 
             // Try to update using a try-catch because Lightweight Charts throws if times are not strictly ascending
             try {

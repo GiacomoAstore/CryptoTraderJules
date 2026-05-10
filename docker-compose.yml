@@ -68,6 +68,11 @@ services:
         condition: service_healthy
     networks:
       - cryptoscalper_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   dashboard:
@@ -76,7 +81,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - api_gateway
+      api_gateway:
+        condition: service_healthy
     networks:
       - cryptoscalper_net
     restart: unless-stopped
