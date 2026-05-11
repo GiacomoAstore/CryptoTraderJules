@@ -28,3 +28,13 @@ SELECT create_hypertable('trades', 'time', if_not_exists => TRUE);
 
 -- Create index on symbol for trades
 CREATE INDEX IF NOT EXISTS ix_trades_symbol_time ON trades (symbol, time DESC);
+
+-- Create daily performance table
+CREATE TABLE IF NOT EXISTS daily_performance (
+    date DATE PRIMARY KEY,
+    total_pnl DOUBLE PRECISION,
+    win_rate DOUBLE PRECISION,
+    sharpe_ratio DOUBLE PRECISION,
+    max_drawdown DOUBLE PRECISION,
+    total_trades INTEGER
+);
