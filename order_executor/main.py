@@ -119,6 +119,18 @@ async def evaluate_open_positions(tick: dict, redis_client):
                 "pnl_netto": net_pnl
             }
 
+            # Update virtual balance in Redis
+            try:
+                balance_raw = await redis_client.get("paper:balance")
+                current_balance = float(balance_raw) if balance_raw else 10000.0 # Start with $10k default
+                new_balance = current_balance + net_pnl
+                await redis_client.set("paper:balance", new_balance)
+
+                # Broadcast updated balance
+                await redis_client.publish("paper:balance_updates", json.dumps({"balance": new_balance, "timestamp": int(time.time() * 1000)}))
+            except Exception as e:
+                logger.error(f"Failed to update paper balance: {e}")
+
             await redis_client.publish("executed_trades", json.dumps(result))
         else:
             remaining_positions.append(pos)
@@ -136,16 +148,21 @@ async def main():
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     pubsub = redis_client.pubsub()
 
-    await pubsub.psubscribe("approved_orders", "ticks:*")
-    logger.info("Paper Trading Engine started. Listening for orders and live ticks...")
+    await pubsub.psubscribe("approved_orders", "shadow_orders", "ticks:*")
+    logger.info("Paper Trading Engine started. Listening for orders, shadow orders, and live ticks...")
 
     async for message in pubsub.listen():
         if message["type"] in ["message", "pmessage"]:
             channel = message.get("channel", "")
             data = json.loads(message["data"])
 
-            if channel == "approved_orders":
+            if channel in ["approved_orders", "shadow_orders"]:
                 try:
+                    # In a fully fleshed out system, shadow_orders might have their own isolated
+                    # evaluate_open_positions pool so they don't impact paper_balance.
+                    # For this step, we just route them through to log execution and append a tag.
+                    if channel == "shadow_orders":
+                        data["strategy_name"] = f"[SHADOW] {data.get('strategy_name', 'Unknown')}"
                     await execute_market_order(data, redis_client)
                 except Exception as e:
                     logger.error(f"Failed to open position: {e}")

@@ -6,6 +6,7 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [latestTick, setLatestTick] = useState(null);
   const [trades, setTrades] = useState([]);
+  const [metrics, setMetrics] = useState({ paper_balance: 10000.0, daily_pnl: 0.0, win_rate: 0.0, max_drawdown: 0.0 });
   const [symbol] = useState('btcusdt');
 
   useEffect(() => {
@@ -18,6 +19,16 @@ function App() {
         }
       })
       .catch((err) => console.error("Failed to fetch initial trades:", err));
+
+    // Initial fetch of metrics via REST API
+    fetch('http://localhost:8000/api/metrics')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.metrics) {
+          setMetrics(data.metrics);
+        }
+      })
+      .catch((err) => console.error("Failed to fetch initial metrics:", err));
 
     // Connect to WebSocket
     const ws = new WebSocket('ws://localhost:8000/ws');
@@ -35,6 +46,16 @@ function App() {
         } else if (msg.channel === 'executed_trades') {
           // Prepend new trade to the list
           setTrades(prev => [msg.data, ...prev].slice(0, 50));
+          // Refresh metrics since a trade executed
+          fetch('http://localhost:8000/api/metrics')
+            .then((res) => res.json())
+            .then((data) => {
+              if (data && data.metrics) {
+                setMetrics(data.metrics);
+              }
+            }).catch(() => {});
+        } else if (msg.channel === 'paper:balance_updates') {
+            setMetrics(prev => ({ ...prev, paper_balance: msg.data.balance }));
         }
       } catch (err) {
         console.error("Failed to parse websocket message", err);
@@ -54,10 +75,19 @@ function App() {
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
       <h1>CryptoScalper Pro Dashboard</h1>
-      <div style={{ marginBottom: '20px' }}>
-        Status: <span style={{ color: isConnected ? 'green' : 'red', fontWeight: 'bold' }}>
-          {isConnected ? 'Connected' : 'Disconnected'}
-        </span>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', padding: '15px', backgroundColor: '#222', borderRadius: '8px' }}>
+        <div>
+            Status: <span style={{ color: isConnected ? 'green' : 'red', fontWeight: 'bold' }}>
+            {isConnected ? 'Connected' : 'Disconnected'}
+            </span>
+        </div>
+        <div style={{ display: 'flex', gap: '20px' }}>
+            <div><small style={{color: '#aaa'}}>Paper Balance</small><br/><b>${metrics.paper_balance.toFixed(2)}</b></div>
+            <div><small style={{color: '#aaa'}}>Daily PnL</small><br/><b style={{color: metrics.daily_pnl >= 0 ? '#00e676' : '#ff5252'}}>${metrics.daily_pnl.toFixed(2)}</b></div>
+            <div><small style={{color: '#aaa'}}>Win Rate</small><br/><b>{metrics.win_rate.toFixed(1)}%</b></div>
+            <div><small style={{color: '#aaa'}}>Max DD</small><br/><b style={{color: '#ff5252'}}>${metrics.max_drawdown.toFixed(2)}</b></div>
+        </div>
       </div>
 
       <ChartComponent symbol={symbol} tickData={latestTick} />

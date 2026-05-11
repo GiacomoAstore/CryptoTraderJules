@@ -20,7 +20,11 @@ CREATE TABLE IF NOT EXISTS trades (
     side VARCHAR(10) NOT NULL,
     price DOUBLE PRECISION NOT NULL,
     quantity DOUBLE PRECISION NOT NULL,
-    strategy VARCHAR(50)
+    strategy VARCHAR(50),
+    pnl_netto DOUBLE PRECISION,
+    gross_pnl DOUBLE PRECISION,
+    commission_paid DOUBLE PRECISION,
+    close_reason VARCHAR(20)
 );
 
 -- Convert to TimescaleDB hypertable

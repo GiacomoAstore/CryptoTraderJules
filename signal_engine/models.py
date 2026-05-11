@@ -30,3 +30,4 @@ class Signal:
     timestamp_ms: int
     suggested_price: float
     suggested_qty: float
+    is_shadow: bool = False # Used for A/B testing

@@ -56,11 +56,15 @@ class TimescaleTradeRepository(TradeRepository):
 
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO trades (time, trade_id, symbol, side, price, quantity, strategy) VALUES (NOW(), $1, $2, $3, $4, $5, $6)",
+                "INSERT INTO trades (time, trade_id, symbol, side, price, quantity, strategy, pnl_netto, gross_pnl, commission_paid, close_reason) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                 f"mock-{order.get('price')}", # dummy trade id for mock
                 order.get("symbol", "").upper(),
                 order.get("type", "BUY"),
                 float(order.get("price", 0)),
                 float(order.get("quantity", 0.01)),
-                order.get("strategy", "Manual")
+                order.get("strategy", "Manual"),
+                float(trade_data.get("pnl_netto", 0.0)) if "pnl_netto" in trade_data else None,
+                float(trade_data.get("gross_pnl", 0.0)) if "gross_pnl" in trade_data else None,
+                float(trade_data.get("commission_paid", 0.0)) if "commission_paid" in trade_data else None,
+                trade_data.get("close_reason")
             )

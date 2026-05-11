@@ -76,12 +76,18 @@ async def main():
             data = json.loads(message["data"])
 
             if channel == "signals":
-                is_approved = await risk_manager.evaluate_signal(data)
-                if is_approved:
-                    logger.info(f"Signal approved by Risk Manager: {data}")
-                    await redis_client.publish("approved_orders", json.dumps(data))
+                if data.get("is_shadow", False):
+                    # Shadow signals bypass the risk manager and are sent to a separate channel
+                    # for theoretical execution and evaluation (A/B testing)
+                    logger.info(f"Shadow Signal detected, routing to shadow testing: {data}")
+                    await redis_client.publish("shadow_orders", json.dumps(data))
                 else:
-                    logger.info(f"Signal rejected by Risk Manager: {data}")
+                    is_approved = await risk_manager.evaluate_signal(data)
+                    if is_approved:
+                        logger.info(f"Signal approved by Risk Manager: {data}")
+                        await redis_client.publish("approved_orders", json.dumps(data))
+                    else:
+                        logger.info(f"Signal rejected by Risk Manager: {data}")
 
             elif channel == "executed_trades":
                 await risk_manager.process_trade_result(data)
