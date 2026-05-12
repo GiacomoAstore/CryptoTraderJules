@@ -72,9 +72,26 @@ function App() {
     };
   }, []);
 
+  const handleKillSwitch = () => {
+    if (window.confirm("ARE YOU SURE? This will halt all new trades globally!")) {
+      fetch('http://localhost:8000/api/kill-switch', { method: 'POST' })
+        .then(res => res.json())
+        .then(data => alert(data.message))
+        .catch(err => alert("Failed to trigger Kill Switch!"));
+    }
+  };
+
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
-      <h1>CryptoScalper Pro Dashboard</h1>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1>CryptoScalper Pro Dashboard</h1>
+        <button
+          onClick={handleKillSwitch}
+          style={{ backgroundColor: '#ff0000', color: 'white', padding: '10px 20px', border: 'none', borderRadius: '5px', fontWeight: 'bold', cursor: 'pointer', fontSize: '16px' }}
+        >
+          🚨 KILL SWITCH
+        </button>
+      </div>
 
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', padding: '15px', backgroundColor: '#222', borderRadius: '8px' }}>
         <div>

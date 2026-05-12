@@ -227,6 +227,17 @@ async def get_metrics():
 
     return {"status": "ok", "metrics": metrics}
 
+@app.post("/api/kill-switch")
+async def trigger_kill_switch():
+    try:
+        redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
+        await redis_client.publish("system_commands", json.dumps({"action": "KILL_SWITCH"}))
+        await redis_client.publish("alerts", json.dumps({"message": "🚨 URGENT: KILL SWITCH ACTIVATED VIA DASHBOARD! All trading halted."}))
+        await redis_client.aclose()
+        return {"status": "ok", "message": "Kill switch activated"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await manager.connect(websocket)

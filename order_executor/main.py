@@ -17,6 +17,7 @@ logger = logging.getLogger("OrderExecutor")
 
 COMMISSION_RATE = float(os.getenv("COMMISSION_RATE", 0.001)) # 0.1% defaults
 open_positions = {} # symbol -> list of position dicts
+shadow_open_positions = {} # Separate memory pool for shadow trades
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
@@ -40,7 +41,7 @@ class LiveTradeCommand(Command):
         self.redis_client = redis_client
         self.result = None
         self.api_key = os.getenv("BINANCE_API_KEY", "")
-        self.secret_key = os.getenv("BINANCE_SECRET_KEY", "")
+        self.secret_key = os.getenv("BINANCE_API_SECRET", "")
 
     async def execute(self):
         logger.info(f"Executing Live Trade Entry: {self.order_data}")
@@ -54,6 +55,45 @@ class LiveTradeCommand(Command):
             return
 
         base_url = "https://api.binance.com"
+
+        # 20% Hard Cap constraint enforcement
+        try:
+            account_endpoint = "/api/v3/account"
+            ts = int(time.time() * 1000)
+            qs = f"timestamp={ts}"
+            sig = hmac.new(self.secret_key.encode('utf-8'), qs.encode('utf-8'), hashlib.sha256).hexdigest()
+            acc_url = f"{base_url}{account_endpoint}?{qs}&signature={sig}"
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(acc_url, headers={"X-MBX-APIKEY": self.api_key}) as response:
+                    if response.status == 200:
+                        acc_data = await response.json()
+                        usdt_balance = 0.0
+                        for asset in acc_data.get("balances", []):
+                            if asset["asset"] == "USDT":
+                                usdt_balance = float(asset["free"])
+                                break
+
+                        # Fetch current price roughly
+                        last_tick_raw = await self.redis_client.get(f"tick:last:{symbol}")
+                        exec_price = float(self.order_data.get("suggested_price", 0))
+                        if last_tick_raw:
+                            try:
+                                last_tick = json.loads(last_tick_raw)
+                                exec_price = float(last_tick.get("price", exec_price))
+                            except Exception:
+                                pass
+
+                        order_value = exec_price * qty
+                        max_allowed_value = usdt_balance * 0.20
+
+                        if order_value > max_allowed_value:
+                            logger.critical(f"HARD CAP EXCEEDED: Order value (${order_value:.2f}) is > 20% of USDT balance (${usdt_balance:.2f}). Aborting live trade.")
+                            return
+        except Exception as e:
+            logger.error(f"Failed to fetch account balance for Hard Cap check. Aborting live trade. {e}")
+            return
+
         endpoint = "/api/v3/order"
 
         timestamp = int(time.time() * 1000)
@@ -125,10 +165,11 @@ class LiveTradeCommand(Command):
         }
 
 class PaperTradeCommand(Command):
-    def __init__(self, order_data: dict, redis_client):
+    def __init__(self, order_data: dict, redis_client, is_shadow: bool = False):
         self.order_data = order_data
         self.redis_client = redis_client
         self.position = None
+        self.is_shadow = is_shadow
 
     async def execute(self):
         logger.info(f"Executing Paper Trade Entry: {self.order_data}")
@@ -168,20 +209,22 @@ class PaperTradeCommand(Command):
             "entry_time": int(time.time() * 1000),
             "stop_loss": exec_price * sl_mult,
             "take_profit": exec_price * tp_mult,
-            "strategy": self.order_data.get("strategy_name", "Unknown")
+            "strategy": f"[SHADOW] {self.order_data.get('strategy_name', 'Unknown')}" if self.is_shadow else self.order_data.get("strategy_name", "Unknown")
         }
 
-        if symbol not in open_positions:
-            open_positions[symbol] = []
-        open_positions[symbol].append(self.position)
-        logger.info(f"Position opened via PaperTradeCommand: {self.position}")
+        target_pool = shadow_open_positions if self.is_shadow else open_positions
+        if symbol not in target_pool:
+            target_pool[symbol] = []
+        target_pool[symbol].append(self.position)
+        logger.info(f"{'Shadow ' if self.is_shadow else ''}Position opened via PaperTradeCommand: {self.position}")
 
     async def undo(self):
         if not self.position:
             return
         symbol = self.position["symbol"]
-        if symbol in open_positions:
-            open_positions[symbol] = [p for p in open_positions[symbol] if p["id"] != self.position["id"]]
+        target_pool = shadow_open_positions if self.is_shadow else open_positions
+        if symbol in target_pool:
+            target_pool[symbol] = [p for p in target_pool[symbol] if p["id"] != self.position["id"]]
             logger.info(f"Undo PaperTradeCommand: Position {self.position['id']} removed.")
             self.position = None
 
@@ -194,15 +237,20 @@ class PaperTradeCommand(Command):
 
 async def evaluate_open_positions(tick: dict, redis_client):
     symbol = tick.get("symbol")
-    if symbol not in open_positions or not open_positions[symbol]:
-        return
-
     current_price = float(tick.get("price", 0))
     if current_price <= 0:
         return
 
+    # Evaluate both real paper positions and shadow positions
+    await _evaluate_pool(symbol, current_price, open_positions, redis_client, is_shadow=False)
+    await _evaluate_pool(symbol, current_price, shadow_open_positions, redis_client, is_shadow=True)
+
+async def _evaluate_pool(symbol: str, current_price: float, pool: dict, redis_client, is_shadow: bool):
+    if symbol not in pool or not pool[symbol]:
+        return
+
     remaining_positions = []
-    for pos in open_positions[symbol]:
+    for pos in pool[symbol]:
         side = pos["side"]
         sl = pos["stop_loss"]
         tp = pos["take_profit"]
@@ -237,23 +285,24 @@ async def evaluate_open_positions(tick: dict, redis_client):
                 "pnl_netto": net_pnl
             }
 
-            # Update virtual balance in Redis
-            try:
-                balance_raw = await redis_client.get("paper:balance")
-                current_balance = float(balance_raw) if balance_raw else 10000.0 # Start with $10k default
-                new_balance = current_balance + net_pnl
-                await redis_client.set("paper:balance", new_balance)
+            # Only update the global virtual balance if it's NOT a shadow trade
+            if not is_shadow:
+                try:
+                    balance_raw = await redis_client.get("paper:balance")
+                    current_balance = float(balance_raw) if balance_raw else 10000.0 # Start with $10k default
+                    new_balance = current_balance + net_pnl
+                    await redis_client.set("paper:balance", new_balance)
 
-                # Broadcast updated balance
-                await redis_client.publish("paper:balance_updates", json.dumps({"balance": new_balance, "timestamp": int(time.time() * 1000)}))
-            except Exception as e:
-                logger.error(f"Failed to update paper balance: {e}")
+                    # Broadcast updated balance
+                    await redis_client.publish("paper:balance_updates", json.dumps({"balance": new_balance, "timestamp": int(time.time() * 1000)}))
+                except Exception as e:
+                    logger.error(f"Failed to update paper balance: {e}")
 
             await redis_client.publish("executed_trades", json.dumps(result))
         else:
             remaining_positions.append(pos)
 
-    open_positions[symbol] = remaining_positions
+    pool[symbol] = remaining_positions
 
 async def validate_historical_performance(redis_client) -> bool:
     logger.info("Validating historical paper trading performance before allowing LIVE execution...")
@@ -292,42 +341,56 @@ async def validate_historical_performance(redis_client) -> bool:
 
 
 async def main():
-    trading_mode = os.getenv("TRADING_MODE", "PAPER").upper()
+    # Require explicit LIVE_TRADING_ENABLED=true for safety
+    live_trading_enabled = os.getenv("LIVE_TRADING_ENABLED", "false").lower() == "true"
+
+    kill_switch_active = False
 
     logger.info(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
-    if trading_mode == "LIVE":
-        # Phase A6/A7 Validation Gates
+    if live_trading_enabled:
+        # Phase A6/A7 Validation Gates - MUST CRASH if failed
         passed = await validate_historical_performance(redis_client)
         if not passed:
-            logger.critical("Validation Gates failed. Falling back to PAPER trading mode.")
-            trading_mode = "PAPER"
+            logger.critical("FATAL: Validation Gates failed (G2). System will NOT fallback to paper. CRASHING TO PREVENT UNAUTHORIZED LIVE TRADING.")
+            sys.exit(1)
 
     pubsub = redis_client.pubsub()
 
-    await pubsub.psubscribe("approved_orders", "shadow_orders", "ticks:*")
-    logger.info(f"{trading_mode} Trading Engine started. Listening for orders, shadow orders, and live ticks...")
+    await pubsub.psubscribe("approved_orders", "shadow_orders", "ticks:*", "system_commands")
+    logger.info(f"Trading Engine started. LIVE ENABLED: {live_trading_enabled}. Listening for orders, shadow orders, and live ticks...")
 
     async for message in pubsub.listen():
         if message["type"] in ["message", "pmessage"]:
             channel = message.get("channel", "")
             data = json.loads(message["data"])
 
-            if channel in ["approved_orders", "shadow_orders"]:
-                try:
-                    # In a fully fleshed out system, shadow_orders might have their own isolated
-                    # evaluate_open_positions pool so they don't impact paper_balance.
-                    # For this step, we just route them through to log execution and append a tag.
-                    if channel == "shadow_orders":
-                        data["strategy_name"] = f"[SHADOW] {data.get('strategy_name', 'Unknown')}"
+            if channel == "system_commands":
+                if data.get("action") == "KILL_SWITCH":
+                    logger.critical("KILL SWITCH INITIATED VIA REDIS! BLOCKING ALL NEW ORDERS AND LIQUIDATING POSITIONS.")
+                    kill_switch_active = True
+                    # In a real setup, we would trigger a synchronous liquidation of all open Binance orders
+                    # For safety scaffold, we clear the internal paper positions memory.
+                    open_positions.clear()
+                    logger.warning("All internal paper positions have been cleared due to KILL SWITCH.")
 
-                    if trading_mode == "PAPER":
-                        cmd = PaperTradeCommand(data, redis_client)
-                        await cmd.execute()
-                    elif trading_mode == "LIVE":
-                        cmd = LiveTradeCommand(data, redis_client)
-                        await cmd.execute()
+            elif channel in ["approved_orders", "shadow_orders"]:
+                if kill_switch_active:
+                    logger.warning("Kill switch is active. Blocking incoming order.")
+                    continue
+
+                try:
+                    # Paper trading always runs
+                    is_shadow = (channel == "shadow_orders")
+                    cmd_paper = PaperTradeCommand(data, redis_client, is_shadow=is_shadow)
+                    await cmd_paper.execute()
+
+                    # Live runs in parallel if enabled and not shadow
+                    if live_trading_enabled and channel != "shadow_orders":
+                        cmd_live = LiveTradeCommand(data, redis_client)
+                        await cmd_live.execute()
+
                 except Exception as e:
                     logger.error(f"Failed to open position: {e}")
 
