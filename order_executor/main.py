@@ -18,6 +18,7 @@ logger = logging.getLogger("OrderExecutor")
 COMMISSION_RATE = float(os.getenv("COMMISSION_RATE", 0.001)) # 0.1% defaults
 open_positions = {} # symbol -> list of position dicts
 shadow_open_positions = {} # Separate memory pool for shadow trades
+live_open_positions = {} # Separate memory pool for real live positions
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
@@ -137,6 +138,8 @@ class LiveTradeCommand(Command):
                                 "quantity": float(data.get("executedQty", qty)),
                                 "price": round(executed_price * tp_mult, 2),
                                 "stopPrice": round(executed_price * sl_mult, 2),
+                                "stopLimitPrice": round(executed_price * sl_mult * 0.999, 2), # Required for Binance OCO Stop-Limit leg
+                                "stopLimitTimeInForce": "GTC",
                                 "timestamp": int(time.time() * 1000)
                             }
                             oco_qs = urllib.parse.urlencode(oco_params)
@@ -149,6 +152,25 @@ class LiveTradeCommand(Command):
                                     logger.info(f"OCO Placed Successfully: SL/TP active on Binance: {oco_data}")
                                 else:
                                     logger.error(f"Failed to place OCO! Risk unprotected: {oco_data}")
+
+                            # Track the Live position locally in memory for state consistency/kill-switch
+                            position_id = str(data.get("orderId", uuid.uuid4()))
+                            live_pos = {
+                                "id": position_id,
+                                "symbol": symbol,
+                                "side": side,
+                                "qty": float(data.get("executedQty", qty)),
+                                "entry_price": executed_price,
+                                "entry_time": timestamp,
+                                "strategy": self.order_data.get("strategy_name", "Unknown"),
+                                "oco_order_list_id": oco_data.get("orderListId") if 'oco_data' in locals() and isinstance(oco_data, dict) else None
+                            }
+                            if symbol not in live_open_positions:
+                                live_open_positions[symbol] = []
+                            live_open_positions[symbol].append(live_pos)
+
+                            # Persist live position state
+                            await self.redis_client.set("state:live_positions", json.dumps(live_open_positions))
 
                             # Publish to executed_trades so it gets saved to DB
                             db_payload = {
@@ -390,6 +412,7 @@ async def main():
     try:
         saved_open = await redis_client.get("state:open_positions")
         saved_shadow = await redis_client.get("state:shadow_positions")
+        saved_live = await redis_client.get("state:live_positions")
         if saved_open:
             global open_positions
             open_positions = json.loads(saved_open)
@@ -398,6 +421,10 @@ async def main():
             global shadow_open_positions
             shadow_open_positions = json.loads(saved_shadow)
             logger.info(f"Restored {sum(len(v) for v in shadow_open_positions.values())} shadow positions from Redis.")
+        if saved_live:
+            global live_open_positions
+            live_open_positions = json.loads(saved_live)
+            logger.info(f"Restored {sum(len(v) for v in live_open_positions.values())} live positions from Redis.")
     except Exception as e:
         logger.error(f"Failed to restore positions from Redis: {e}")
 
@@ -425,8 +452,10 @@ async def main():
                     # In a real setup, we would trigger a synchronous liquidation of all open Binance orders
                     # For safety scaffold, we clear the internal paper positions memory.
                     open_positions.clear()
+                    live_open_positions.clear()
                     await redis_client.set("state:open_positions", "{}")
-                    logger.warning("All internal paper positions have been cleared due to KILL SWITCH.")
+                    await redis_client.set("state:live_positions", "{}")
+                    logger.warning("All internal paper and live positions have been cleared locally due to KILL SWITCH.")
 
             elif channel in ["approved_orders", "shadow_orders"]:
                 if kill_switch_active:
