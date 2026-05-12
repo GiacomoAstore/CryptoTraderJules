@@ -6,7 +6,10 @@ function App() {
   const [isConnected, setIsConnected] = useState(false);
   const [latestTick, setLatestTick] = useState(null);
   const [trades, setTrades] = useState([]);
-  const [metrics, setMetrics] = useState({ paper_balance: 10000.0, daily_pnl: 0.0, win_rate: 0.0, max_drawdown: 0.0 });
+  const [metrics, setMetrics] = useState({
+    paper_balance: 10000.0, daily_pnl: 0.0, win_rate: 0.0, max_drawdown: 0.0,
+    live_daily_pnl: 0.0, live_win_rate: 0.0, live_total_trades: 0
+  });
   const [symbol] = useState('btcusdt');
 
   useEffect(() => {
@@ -93,17 +96,33 @@ function App() {
         </button>
       </div>
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px', padding: '15px', backgroundColor: '#222', borderRadius: '8px' }}>
-        <div>
-            Status: <span style={{ color: isConnected ? 'green' : 'red', fontWeight: 'bold' }}>
-            {isConnected ? 'Connected' : 'Disconnected'}
-            </span>
+      <div style={{ display: 'flex', gap: '20px', marginBottom: '20px' }}>
+        {/* PAPER METRICS PANE */}
+        <div style={{ flex: 1, padding: '15px', backgroundColor: '#222', borderRadius: '8px' }}>
+            <h3 style={{ marginTop: 0, color: '#aaa' }}>🧪 Paper Metrics</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div><small style={{color: '#aaa'}}>Status</small><br/><b style={{ color: isConnected ? 'green' : 'red' }}>{isConnected ? 'Connected' : 'Disconnected'}</b></div>
+                <div><small style={{color: '#aaa'}}>Virtual Balance</small><br/><b>${metrics.paper_balance.toFixed(2)}</b></div>
+                <div><small style={{color: '#aaa'}}>Paper PnL</small><br/><b style={{color: metrics.daily_pnl >= 0 ? '#00e676' : '#ff5252'}}>${metrics.daily_pnl.toFixed(2)}</b></div>
+                <div><small style={{color: '#aaa'}}>Win Rate</small><br/><b>{metrics.win_rate.toFixed(1)}%</b></div>
+                <div><small style={{color: '#aaa'}}>Max DD</small><br/><b style={{color: '#ff5252'}}>${metrics.max_drawdown.toFixed(2)}</b></div>
+            </div>
         </div>
-        <div style={{ display: 'flex', gap: '20px' }}>
-            <div><small style={{color: '#aaa'}}>Paper Balance</small><br/><b>${metrics.paper_balance.toFixed(2)}</b></div>
-            <div><small style={{color: '#aaa'}}>Daily PnL</small><br/><b style={{color: metrics.daily_pnl >= 0 ? '#00e676' : '#ff5252'}}>${metrics.daily_pnl.toFixed(2)}</b></div>
-            <div><small style={{color: '#aaa'}}>Win Rate</small><br/><b>{metrics.win_rate.toFixed(1)}%</b></div>
-            <div><small style={{color: '#aaa'}}>Max DD</small><br/><b style={{color: '#ff5252'}}>${metrics.max_drawdown.toFixed(2)}</b></div>
+
+        {/* LIVE METRICS PANE */}
+        <div style={{ flex: 1, padding: '15px', backgroundColor: '#3a2020', border: '1px solid #ff5252', borderRadius: '8px' }}>
+            <h3 style={{ marginTop: 0, color: '#ff5252' }}>🔥 LIVE Metrics</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                <div><small style={{color: '#aaa'}}>Live Trades Today</small><br/><b>{metrics.live_total_trades}</b></div>
+                <div><small style={{color: '#aaa'}}>Real PnL</small><br/><b style={{color: metrics.live_daily_pnl >= 0 ? '#00e676' : '#ff5252'}}>${metrics.live_daily_pnl.toFixed(2)}</b></div>
+                <div><small style={{color: '#aaa'}}>Real Win Rate</small><br/><b>{metrics.live_win_rate.toFixed(1)}%</b></div>
+                <div>
+                    <small style={{color: '#aaa'}}>Slippage (Real - Paper)</small><br/>
+                    <b style={{color: (metrics.live_daily_pnl - metrics.daily_pnl) >= 0 ? '#00e676' : '#ff5252'}}>
+                        ${(metrics.live_daily_pnl - metrics.daily_pnl).toFixed(2)}
+                    </b>
+                </div>
+            </div>
         </div>
       </div>
 

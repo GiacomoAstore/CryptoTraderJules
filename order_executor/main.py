@@ -122,13 +122,41 @@ class LiveTradeCommand(Command):
                             logger.info(f"Live trade executed successfully: {data}")
                             self.result = data
 
+
+                            # OCO Order Logic (Stop Loss / Take Profit)
+                            executed_price = float(data.get("cummulativeQuoteQty", 0)) / float(data.get("executedQty", 1)) if float(data.get("executedQty", 0)) > 0 else exec_price
+
+                            sl_mult = 0.995 if side == "BUY" else 1.005
+                            tp_mult = 1.005 if side == "BUY" else 0.995
+
+                            oco_side = "SELL" if side == "BUY" else "BUY"
+                            oco_endpoint = "/api/v3/order/oco"
+                            oco_params = {
+                                "symbol": symbol,
+                                "side": oco_side,
+                                "quantity": float(data.get("executedQty", qty)),
+                                "price": round(executed_price * tp_mult, 2),
+                                "stopPrice": round(executed_price * sl_mult, 2),
+                                "timestamp": int(time.time() * 1000)
+                            }
+                            oco_qs = urllib.parse.urlencode(oco_params)
+                            oco_sig = hmac.new(self.secret_key.encode('utf-8'), oco_qs.encode('utf-8'), hashlib.sha256).hexdigest()
+                            oco_url = f"{base_url}{oco_endpoint}?{oco_qs}&signature={oco_sig}"
+
+                            async with session.post(oco_url, headers=headers) as oco_response:
+                                oco_data = await oco_response.json()
+                                if oco_response.status == 200:
+                                    logger.info(f"OCO Placed Successfully: SL/TP active on Binance: {oco_data}")
+                                else:
+                                    logger.error(f"Failed to place OCO! Risk unprotected: {oco_data}")
+
                             # Publish to executed_trades so it gets saved to DB
                             db_payload = {
                                 "status": "FILLED",
                                 "order": {
                                     "symbol": symbol,
                                     "type": side,
-                                    "price": float(data.get("cummulativeQuoteQty", 0)) / float(data.get("executedQty", 1)) if float(data.get("executedQty", 0)) > 0 else 0,
+                                    "price": executed_price,
                                     "quantity": float(data.get("executedQty", qty)),
                                     "strategy": self.order_data.get("strategy_name", "Unknown")
                                 },
@@ -216,6 +244,11 @@ class PaperTradeCommand(Command):
         if symbol not in target_pool:
             target_pool[symbol] = []
         target_pool[symbol].append(self.position)
+
+        # Persist to Redis
+        pool_key = "state:shadow_positions" if self.is_shadow else "state:open_positions"
+        await self.redis_client.set(pool_key, json.dumps(target_pool))
+
         logger.info(f"{'Shadow ' if self.is_shadow else ''}Position opened via PaperTradeCommand: {self.position}")
 
     async def undo(self):
@@ -304,6 +337,10 @@ async def _evaluate_pool(symbol: str, current_price: float, pool: dict, redis_cl
 
     pool[symbol] = remaining_positions
 
+    # Persist back to Redis after processing
+    pool_key = "state:shadow_positions" if is_shadow else "state:open_positions"
+    await redis_client.set(pool_key, json.dumps(pool))
+
 async def validate_historical_performance(redis_client) -> bool:
     logger.info("Validating historical paper trading performance before allowing LIVE execution...")
     # Fetch metrics from API Gateway / Redis
@@ -349,6 +386,21 @@ async def main():
     logger.info(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
+    # Restore state from Redis
+    try:
+        saved_open = await redis_client.get("state:open_positions")
+        saved_shadow = await redis_client.get("state:shadow_positions")
+        if saved_open:
+            global open_positions
+            open_positions = json.loads(saved_open)
+            logger.info(f"Restored {sum(len(v) for v in open_positions.values())} open positions from Redis.")
+        if saved_shadow:
+            global shadow_open_positions
+            shadow_open_positions = json.loads(saved_shadow)
+            logger.info(f"Restored {sum(len(v) for v in shadow_open_positions.values())} shadow positions from Redis.")
+    except Exception as e:
+        logger.error(f"Failed to restore positions from Redis: {e}")
+
     if live_trading_enabled:
         # Phase A6/A7 Validation Gates - MUST CRASH if failed
         passed = await validate_historical_performance(redis_client)
@@ -373,6 +425,7 @@ async def main():
                     # In a real setup, we would trigger a synchronous liquidation of all open Binance orders
                     # For safety scaffold, we clear the internal paper positions memory.
                     open_positions.clear()
+                    await redis_client.set("state:open_positions", "{}")
                     logger.warning("All internal paper positions have been cleared due to KILL SWITCH.")
 
             elif channel in ["approved_orders", "shadow_orders"]:

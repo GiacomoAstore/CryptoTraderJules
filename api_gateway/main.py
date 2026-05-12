@@ -200,28 +200,48 @@ async def get_metrics():
         "paper_balance": balance,
         "daily_pnl": 0.0,
         "win_rate": 0.0,
-        "max_drawdown": 0.0
+        "max_drawdown": 0.0,
+        "live_daily_pnl": 0.0,
+        "live_win_rate": 0.0,
+        "live_total_trades": 0
     }
 
     if trade_repo.pool:
         try:
             async with trade_repo.pool.acquire() as conn:
-                # Fallback: compute live daily metrics instead of waiting for cron job
-                rows = await conn.fetch('''
+                # PAPER Metrics
+                paper_rows = await conn.fetch('''
                     SELECT
                         COUNT(*) as total_trades,
                         SUM(pnl_netto) as total_pnl,
                         COUNT(CASE WHEN pnl_netto > 0 THEN 1 END) as winning_trades,
                         MIN(pnl_netto) as max_loss
                     FROM trades
-                    WHERE time::date = CURRENT_DATE AND pnl_netto IS NOT NULL
+                    WHERE time::date = CURRENT_DATE AND pnl_netto IS NOT NULL AND close_reason != 'LIVE_MARKET'
                 ''')
-                if rows and rows[0]['total_trades'] > 0:
-                    stats = rows[0]
+                if paper_rows and paper_rows[0]['total_trades'] > 0:
+                    stats = paper_rows[0]
                     total_trades = stats['total_trades']
                     metrics["daily_pnl"] = stats['total_pnl'] or 0.0
                     metrics["win_rate"] = (stats['winning_trades'] / total_trades) * 100 if total_trades > 0 else 0.0
                     metrics["max_drawdown"] = stats['max_loss'] if stats['max_loss'] is not None and stats['max_loss'] < 0 else 0.0
+
+                # LIVE Metrics
+                live_rows = await conn.fetch('''
+                    SELECT
+                        COUNT(*) as total_trades,
+                        SUM(pnl_netto) as total_pnl,
+                        COUNT(CASE WHEN pnl_netto > 0 THEN 1 END) as winning_trades
+                    FROM trades
+                    WHERE time::date = CURRENT_DATE AND pnl_netto IS NOT NULL AND close_reason = 'LIVE_MARKET'
+                ''')
+                if live_rows and live_rows[0]['total_trades'] > 0:
+                    stats = live_rows[0]
+                    total_trades = stats['total_trades']
+                    metrics["live_total_trades"] = total_trades
+                    metrics["live_daily_pnl"] = stats['total_pnl'] or 0.0
+                    metrics["live_win_rate"] = (stats['winning_trades'] / total_trades) * 100 if total_trades > 0 else 0.0
+
         except Exception as e:
             print(f"Failed to fetch daily metrics: {e}")
 
