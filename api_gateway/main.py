@@ -6,8 +6,11 @@ import os
 import redis.asyncio as redis
 import urllib.request
 import urllib.parse
+from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="CryptoScalper API Gateway")
+
+Instrumentator().instrument(app).expose(app)
 
 app.add_middleware(
     CORSMiddleware,

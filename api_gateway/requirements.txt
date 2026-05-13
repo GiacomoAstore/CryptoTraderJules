@@ -5,3 +5,4 @@ asyncpg==0.28.0
 websockets==12.0
 python-telegram-bot==20.3
 apscheduler==3.10.4
+prometheus-fastapi-instrumentator==7.0.0

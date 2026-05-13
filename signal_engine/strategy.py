@@ -51,9 +51,29 @@ class OrderBookImbalanceStrategy(BaseStrategy):
         return None
 
 class MomentumBurstStrategy(BaseStrategy):
-    def __init__(self, is_shadow: bool = False):
+    def __init__(self, is_shadow: bool = False, lookback: int = 5, threshold: float = 0.005):
         super().__init__("Momentum Burst", is_shadow)
+        self.lookback = lookback
+        self.threshold = threshold
 
     def generate_signal(self, tick: NormalizedTick, context: MarketContext) -> Signal | None:
-        # Stub implementation
+        if tick.type != "trade" or not tick.price:
+            return None
+
+        history = context.price_history.get(tick.symbol, [])
+        if len(history) < self.lookback:
+            return None
+
+        old_price = history[-self.lookback]
+        current_price = tick.price
+
+        # Calculate rate of change over the lookback period
+        roc = (current_price - old_price) / old_price
+
+        # If rate of change exceeds threshold, ride the momentum
+        if roc > self.threshold:
+             return Signal(tick.symbol, "BUY", min(1.0, roc / self.threshold * 0.5), self.name, int(time.time()*1000), tick.price, 0.01, self.is_shadow)
+        elif roc < -self.threshold:
+             return Signal(tick.symbol, "SELL", min(1.0, abs(roc) / self.threshold * 0.5), self.name, int(time.time()*1000), tick.price, 0.01, self.is_shadow)
+
         return None

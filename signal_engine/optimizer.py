@@ -1,5 +1,6 @@
 import json
 import logging
+import urllib.request
 from strategy import EMAStrategy
 from models import NormalizedTick, MarketContext
 
@@ -33,18 +34,36 @@ def run_backtest(ticks, strategy, history_size):
     pnl = len(signals) * 0.15 # $0.15 mock profit per signal
     return {"signals_generated": len(signals), "estimated_win_rate": win_rate, "estimated_pnl": pnl}
 
-def walk_forward_optimize(historical_data_path):
-    logger.info(f"Starting Walk-Forward Optimization using data from {historical_data_path}")
+def fetch_historical_binance_data(symbol="BTCUSDT", limit=1000):
+    logger.info(f"Fetching real historical data from Binance for {symbol}")
+    url = f"https://api.binance.com/api/v3/aggTrades?symbol={symbol}&limit={limit}"
 
     try:
-        with open(historical_data_path, "r") as f:
-            raw_ticks = json.load(f)
-    except FileNotFoundError:
-        logger.error(f"Historical data file not found: {historical_data_path}. Mocking data.")
-        raw_ticks = [
-            {"symbol": "BTCUSDT", "timestamp_ms": i, "type": "trade", "price": 60000 + (i % 100)}
+        req = urllib.request.Request(url)
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode('utf-8'))
+
+        return [
+            {
+                "symbol": symbol,
+                "timestamp_ms": t["T"],
+                "type": "trade",
+                "price": float(t["p"]),
+                "qty": float(t["q"])
+            }
+            for t in data
+        ]
+    except Exception as e:
+        logger.error(f"Failed to fetch Binance data: {e}. Falling back to mock data.")
+        return [
+            {"symbol": symbol, "timestamp_ms": i, "type": "trade", "price": 60000 + (i % 100)}
             for i in range(1000)
         ]
+
+def walk_forward_optimize():
+    logger.info("Starting Walk-Forward Optimization using real Binance data...")
+
+    raw_ticks = fetch_historical_binance_data()
 
     ticks = [
         NormalizedTick(
@@ -79,4 +98,4 @@ def walk_forward_optimize(historical_data_path):
 
 if __name__ == "__main__":
     # Typically this would be invoked via cron or a manual trigger script.
-    walk_forward_optimize("data/historical_ticks.json")
+    walk_forward_optimize()

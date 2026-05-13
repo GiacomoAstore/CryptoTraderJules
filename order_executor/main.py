@@ -41,8 +41,16 @@ class LiveTradeCommand(Command):
         self.order_data = order_data
         self.redis_client = redis_client
         self.result = None
-        self.api_key = os.getenv("BINANCE_API_KEY", "")
-        self.secret_key = os.getenv("BINANCE_API_SECRET", "")
+        self.api_key = self._load_secret("binance_api_key", "BINANCE_API_KEY")
+        self.secret_key = self._load_secret("binance_api_secret", "BINANCE_API_SECRET")
+
+    def _load_secret(self, secret_name: str, env_fallback: str) -> str:
+        # Load from Docker Secrets first, fallback to environment variable
+        secret_path = f"/run/secrets/{secret_name}"
+        if os.path.exists(secret_path):
+            with open(secret_path, "r") as f:
+                return f.read().strip()
+        return os.getenv(env_fallback, "")
 
     async def execute(self):
         logger.info(f"Executing Live Trade Entry: {self.order_data}")
