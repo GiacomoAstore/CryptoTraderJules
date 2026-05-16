@@ -3,17 +3,21 @@ import json
 import logging
 import os
 import time
+import yaml
 from collections import deque, defaultdict
+from decimal import Decimal, getcontext
 import redis.asyncio as redis
 import strategy
 from dataclasses import asdict
+
+getcontext().prec = 28
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("SignalEngine")
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-MIN_CONSENSUS = int(os.getenv("MIN_CONSENSUS", 2))
+MIN_CONSENSUS = Decimal(os.getenv("MIN_CONSENSUS", "2"))
 MIN_SIGNAL_INTERVAL_MS = int(os.getenv("MIN_SIGNAL_INTERVAL_MS", 500))
 
 class SignalEngine:
@@ -26,119 +30,172 @@ class SignalEngine:
         self.tick_history = defaultdict(lambda: deque(maxlen=100))
         self.last_signal_time = defaultdict(int)
         
-        # Setup strategies
         self.setup_strategies()
 
     def setup_strategies(self):
-        # We will load from env or redis later, for now we instantiate them directly
-        self.strategies = [
-            strategy.EMAStrategy({"weight": 1.0}),
-            strategy.OrderBookImbalanceStrategy({"weight": 1.0}),
-            strategy.MomentumBurstStrategy({"weight": 1.0})
-        ]
-        logger.info(f"Loaded {len(self.strategies)} strategies.")
+        config_path = "/app/shared_config/config.yaml"
+        self.strategies = []
+        global MIN_CONSENSUS
 
-    async def update_config_from_redis(self):
-        while True:
+        if os.path.exists(config_path):
             try:
-                config_str = await self.redis_client.get("config:strategies")
-                if config_str:
-                    config = json.loads(config_str)
-                    MIN_CONSENSUS = config.get("min_consensus", 2)
-                    # Future dynamic strategy updates
+                with open(config_path, "r") as f:
+                    cfg = yaml.safe_load(f)
+                    
+                    if cfg and "min_consensus" in cfg:
+                        MIN_CONSENSUS = Decimal(str(cfg["min_consensus"]))
+                    elif cfg and "consensus" in cfg and "threshold" in cfg["consensus"]:
+                        MIN_CONSENSUS = Decimal(str(cfg["consensus"]["threshold"]))
+                        
+                    if cfg and "strategies" in cfg:
+                        for s in cfg["strategies"]:
+                            name = s["name"]
+                            # Mappatura nomi corretta se necessario (es. EmaCrossoverStrategy -> EMAStrategy)
+                            if name == "EmaCrossoverStrategy":
+                                name = "EMAStrategy"
+                                
+                            if not s.get("enabled", True):
+                                continue
+                                
+                            weight = Decimal(str(s.get("weight", "1.0")))
+                            
+                            # Supporto diversi formati config
+                            for variant_key, variant_name in [("params", "A"), ("variant_a", "A"), ("variant_b", "B")]:
+                                if variant_key in s:
+                                    params = s[variant_key].copy()
+                                    params["weight"] = weight
+                                    params["ab_variant"] = variant_name
+                                    strat_class = getattr(strategy, name, None)
+                                    if strat_class:
+                                        self.strategies.append(strat_class(params))
+                                        logger.info(f"Loaded strategy: {name} (Variant {variant_name})")
+                                    else:
+                                        logger.warning(f"Strategy class not found: {name}")
+                                        
             except Exception as e:
-                logger.error(f"Error loading config from Redis: {e}")
-            await asyncio.sleep(5)
+                logger.error(f"Failed to load config.yaml: {e}")
+                
+        if not self.strategies:
+            self.strategies = [
+                strategy.EMAStrategy({"weight": "1.0", "ab_variant": "A"}),
+                strategy.OrderBookImbalanceStrategy({"weight": "1.0", "ab_variant": "A"}),
+                strategy.MomentumBurstStrategy({"weight": "1.0", "ab_variant": "A"})
+            ]
+
+        logger.info(f"Loaded {len(self.strategies)} strategy instances. Consensus required: {MIN_CONSENSUS}")
 
     async def run(self):
-        asyncio.create_task(self.update_config_from_redis())
-        
         pubsub = self.redis_client.pubsub()
-        await pubsub.psubscribe("ticks:*")
+        await pubsub.psubscribe("ticks:*", "system:commands")
         logger.info("Signal Engine started. Waiting for ticks...")
 
         async for message in pubsub.listen():
             if message["type"] in ["message", "pmessage"]:
                 channel = message.get("channel", "")
                 
+                if channel == "system:commands":
+                    data = message.get("data")
+                    if isinstance(data, bytes):
+                        data = data.decode('utf-8')
+                    if data == "RELOAD_CONFIG":
+                        logger.info("Received RELOAD_CONFIG command. Reloading strategies...")
+                        self.setup_strategies()
+                    continue
+
                 if not channel.startswith("ticks:"):
                     continue
 
-                tick = json.loads(message["data"])
-                symbol = tick.get("symbol")
-                if not symbol:
-                    continue
+                try:
+                    tick_raw = json.loads(message["data"])
 
-                # Anti-spam check
-                current_time_ms = int(time.time() * 1000)
-                if current_time_ms - self.last_signal_time[symbol] < MIN_SIGNAL_INTERVAL_MS:
-                    continue
+                    symbol = tick_raw.get("symbol")
+                    if not symbol: continue
 
-                # Update state
-                self.price_history[symbol].append(tick["price"])
-                self.tick_history[symbol].append(tick)
-
-                context = strategy.MarketContext(
-                    price_history=self.price_history[symbol],
-                    tick_history=self.tick_history[symbol],
-                    current_position=None # Will be updated by Risk Manager feedback in the future
-                )
-                
-                buy_votes = 0.0
-                sell_votes = 0.0
-                suggested_prices_buy = []
-                suggested_prices_sell = []
-
-                for strat in self.strategies:
-                    if not strat.enabled: continue
-                    
-                    signal = strat.generate_signal(tick, context)
-                    if signal:
-                        weight = strat.weight * signal.strength
-                        if signal.direction == "BUY":
-                            buy_votes += weight
-                            suggested_prices_buy.append(signal.suggested_price)
-                        elif signal.direction == "SELL":
-                            sell_votes += weight
-                            suggested_prices_sell.append(signal.suggested_price)
-
-                final_signal = None
-                if buy_votes >= MIN_CONSENSUS and buy_votes > sell_votes:
-                    avg_price = sum(suggested_prices_buy) / len(suggested_prices_buy)
-                    final_signal = strategy.Signal(
-                        symbol=symbol,
-                        direction="BUY",
-                        strength=min(1.0, buy_votes / len(self.strategies)),
-                        strategy_name="Consensus",
-                        timestamp_ms=current_time_ms,
-                        suggested_price=avg_price
-                    )
-                elif sell_votes >= MIN_CONSENSUS and sell_votes > buy_votes:
-                    avg_price = sum(suggested_prices_sell) / len(suggested_prices_sell)
-                    final_signal = strategy.Signal(
-                        symbol=symbol,
-                        direction="SELL",
-                        strength=min(1.0, sell_votes / len(self.strategies)),
-                        strategy_name="Consensus",
-                        timestamp_ms=current_time_ms,
-                        suggested_price=avg_price
-                    )
-
-                if final_signal:
-                    self.last_signal_time[symbol] = current_time_ms
-                    logger.info(f"Consensus Signal: {final_signal.direction} {symbol} (Buy: {buy_votes}, Sell: {sell_votes})")
-                    
-                    # Ensure compatibility with existing RiskManager format
-                    compat_signal = {
-                        "type": final_signal.direction,
-                        "symbol": final_signal.symbol,
-                        "price": final_signal.suggested_price,
-                        "strength": final_signal.strength,
-                        "timestamp_ms": final_signal.timestamp_ms
+                    # Normalizzazione tick con Decimal
+                    tick: strategy.NormalizedTick = {
+                        "symbol": symbol,
+                        "price": Decimal(str(tick_raw["price"])),
+                        "qty": Decimal(str(tick_raw["qty"])),
+                        "side": tick_raw["side"],
+                        "timestamp_ms": tick_raw["timestamp_ms"],
+                        "bid_price": Decimal(str(tick_raw.get("bid_price", 0))),
+                        "ask_price": Decimal(str(tick_raw.get("ask_price", 0))),
+                        "bid_qty": Decimal(str(tick_raw.get("bid_qty", 0))),
+                        "ask_qty": Decimal(str(tick_raw.get("ask_qty", 0)))
                     }
-                    await self.redis_client.publish(f"signals:{symbol}", json.dumps(compat_signal))
-                    # Also publish to old channel for legacy compatibility during transition
-                    await self.redis_client.publish("signals", json.dumps(compat_signal))
+
+                    current_time_ms = int(time.time() * 1000)
+                    if current_time_ms - self.last_signal_time[symbol] < MIN_SIGNAL_INTERVAL_MS:
+                        continue
+
+                    self.price_history[symbol].append(tick["price"])
+                    self.tick_history[symbol].append(tick)
+
+                    context = strategy.MarketContext(
+                        price_history=self.price_history[symbol],
+                        tick_history=self.tick_history[symbol],
+                        current_position=None
+                    )
+                    
+                    votes_buy = {"A": Decimal("0"), "B": Decimal("0")}
+                    votes_sell = {"A": Decimal("0"), "B": Decimal("0")}
+                    suggested_prices_buy = {"A": [], "B": []}
+                    suggested_prices_sell = {"A": [], "B": []}
+                    strats_count = {"A": 0, "B": 0}
+
+                    for strat in self.strategies:
+                        if not strat.enabled: continue
+                        variant = strat.ab_variant
+                        strats_count[variant] += 1
+                        
+                        signal = strat.generate_signal(tick, context)
+                        if signal:
+                            weight = strat.weight * signal.strength
+                            if signal.direction == "BUY":
+                                votes_buy[variant] += weight
+                                suggested_prices_buy[variant].append(signal.suggested_price)
+                            elif signal.direction == "SELL":
+                                votes_sell[variant] += weight
+                                suggested_prices_sell[variant].append(signal.suggested_price)
+
+                    for variant in ["A", "B"]:
+                        if strats_count[variant] == 0: continue
+                        
+                        v_buy = votes_buy[variant]
+                        v_sell = votes_sell[variant]
+                        
+                        final_signal = None
+                        if v_buy >= MIN_CONSENSUS and v_buy > v_sell and suggested_prices_buy[variant]:
+                            avg_price = sum(suggested_prices_buy[variant]) / Decimal(str(len(suggested_prices_buy[variant])))
+                            final_signal = {
+                                "type": "BUY",
+                                "symbol": symbol,
+                                "price": str(avg_price),
+                                "strength": str(min(Decimal("1.0"), v_buy / Decimal(str(strats_count[variant])))),
+                                "strategy_name": "Consensus",
+                                "timestamp_ms": current_time_ms,
+                                "ab_variant": variant
+                            }
+                        elif v_sell >= MIN_CONSENSUS and v_sell > v_buy and suggested_prices_sell[variant]:
+                            avg_price = sum(suggested_prices_sell[variant]) / Decimal(str(len(suggested_prices_sell[variant])))
+                            final_signal = {
+                                "type": "SELL",
+                                "symbol": symbol,
+                                "price": str(avg_price),
+                                "strength": str(min(Decimal("1.0"), v_sell / Decimal(str(strats_count[variant])))),
+                                "strategy_name": "Consensus",
+                                "timestamp_ms": current_time_ms,
+                                "ab_variant": variant
+                            }
+
+                        if final_signal:
+                            self.last_signal_time[symbol] = current_time_ms
+                            logger.info(f"[Variant {variant}] Signal: {final_signal['type']} {symbol}")
+                            await self.redis_client.publish(f"signals:{symbol}", json.dumps(final_signal))
+                            await self.redis_client.publish("signals", json.dumps(final_signal))
+
+                except Exception as e:
+                    logger.error(f"SignalEngine Loop Error: {e}")
 
 async def main():
     logger.info(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
@@ -148,3 +205,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

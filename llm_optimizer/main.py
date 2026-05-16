@@ -34,15 +34,23 @@ async def fetch_performance_metrics():
         # This is a simplified query; in production, we would calculate actual PnL.
         async with pool.acquire() as conn:
             rows = await conn.fetch('''
-                SELECT strategy, 
-                       COUNT(*) as total_trades
+                SELECT strategy_name as strategy, 
+                       COUNT(*) as total_trades,
+                       COUNT(CASE WHEN pnl_usdt > 0 THEN 1 END) as wins
                 FROM trades 
-                WHERE time > NOW() - INTERVAL '24 hours'
-                GROUP BY strategy
+                GROUP BY strategy_name
             ''')
-            # For this MVP, we simulate passing metrics. In a real scenario, we'd join entries/exits to find profit.
-            # Here we just pass the trade frequency to the LLM.
-            metrics = {row['strategy']: {'total_trades': row['total_trades'], 'simulated_win_rate': 0.55} for row in rows}
+            
+            metrics = {}
+            for row in rows:
+                total = row['total_trades']
+                wins = row['wins']
+                win_rate = (wins / total) if total > 0 else 0
+                metrics[row['strategy']] = {
+                    'total_trades': total,
+                    'win_rate': round(win_rate, 2)
+                }
+            
             await pool.close()
             return metrics
     except Exception as e:

@@ -1,13 +1,19 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Request
-from fastapi.middleware.cors import CORSMiddleware
-from slowapi import Limiter, _rate_limit_exceeded_handler
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 import asyncio
 import json
 import os
-import redis.asyncio as redis
 import logging
+import subprocess
+from datetime import datetime, timedelta
+from typing import Optional, Union
+
+import jwt
+import redis.asyncio as redis
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("APIGateway")
@@ -58,7 +64,7 @@ background_tasks = set()
 
 # (Skipping down to add endpoint)
 
-import subprocess
+
 
 @app.on_event("startup")
 async def startup_event():
@@ -93,52 +99,26 @@ async def portfolio_broadcaster():
             if not manager.active_connections:
                 continue
 
-            ledger_str = await redis_client.get("portfolio:ledger")
-            if not ledger_str:
-                continue
-                
-            ledger = json.loads(ledger_str)
-            starting_capital = float(await redis_client.get("portfolio:starting_capital") or ledger.get("USDT", 0.0))
+            balance_a = float(await redis_client.get("paper:balance:A") or 0.0)
+            balance_b = float(await redis_client.get("paper:balance:B") or 0.0)
+            total_capital = balance_a + balance_b
             
-            usdt_balance = ledger.get("USDT", 0.0)
-            total_crypto_value = 0.0
-            holdings = []
-
-            for asset, qty in ledger.items():
-                if asset == "USDT" or qty == 0:
-                    continue
-                
-                # Fetch latest price
-                tick_str = await redis_client.get(f"ticks:{asset}USDT")
-                price = 0.0
-                if tick_str:
-                    tick = json.loads(tick_str)
-                    price = float(tick.get("price", 0.0))
-                
-                value = price * qty
-                total_crypto_value += value
-                holdings.append({
-                    "symbol": asset,
-                    "quantity": qty,
-                    "current_price": price,
-                    "value": value
-                })
-
-            total_capital = usdt_balance + total_crypto_value
+            starting_capital = float(os.getenv("STARTING_CAPITAL", "200.0"))
             net_profit = total_capital - starting_capital
 
             payload = {
                 "total_capital": total_capital,
                 "net_profit": net_profit,
-                "usdt_balance": usdt_balance,
-                "holdings": holdings
+                "usdt_balance": total_capital, # Per semplicità nel paper trading
+                "holdings": [] # In paper trading non tracciamo holdings fisiche qui
             }
             
             ws_msg = json.dumps({"channel": "portfolio", "data": payload})
             await manager.broadcast(ws_msg)
         except Exception as e:
-            print(f"Portfolio broadcaster error: {e}")
+            logger.error(f"Portfolio broadcaster error: {e}")
             await asyncio.sleep(3)
+
 
 async def redis_listener():
     while True:
@@ -164,11 +144,6 @@ async def redis_listener():
         except Exception as e:
             print(f"Redis listener crashed: {e}. Reconnecting in 3 seconds...")
             await asyncio.sleep(3)
-
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi import Depends, HTTPException, status
-import jwt
-from datetime import datetime, timedelta
 
 SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-key")
 ALGORITHM = "HS256"
@@ -367,12 +342,30 @@ async def toggle_bot(enabled: bool, user: str = Depends(get_current_user)):
         return await stop_bot(user)
 
 @app.websocket("/ws/live")
-async def websocket_live_endpoint(websocket: WebSocket):
-    # In a real app we would pass token in query params or first message to authenticate WS
+async def websocket_live_endpoint(websocket: WebSocket, token: str | None = None):
+    # Authenticate WebSocket connection via query parameter 'token'
+    if token is None:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+        
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+    except jwt.PyJWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect(websocket)
+    logger.info(f"WebSocket connected: {username}")
     try:
         while True:
-            data = await websocket.receive_text()
+            # We don't expect messages from client for now, but keep connection open
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
+        logger.info(f"WebSocket disconnected: {username}")
+
 

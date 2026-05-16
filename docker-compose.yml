@@ -59,6 +59,23 @@ services:
       - cryptoscalper_net
     restart: unless-stopped
 
+  reporter:
+    build: ./reporter
+    container_name: cryptoscalper_reporter
+    env_file:
+      - path: .env
+        required: false
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - cryptoscalper_net
+    volumes:
+      - ./reports:/app/reports
+    restart: unless-stopped
+
   llm_optimizer:
     build: ./llm_optimizer
     container_name: cryptoscalper_llm_optimizer
@@ -128,6 +145,8 @@ services:
     container_name: cryptoscalper_redis
     ports:
       - "6379:6379"
+    volumes:
+      - redis_data:/data
     networks:
       - cryptoscalper_net
     healthcheck:
@@ -164,3 +183,4 @@ networks:
 
 volumes:
   timescaledb_data:
+  redis_data:

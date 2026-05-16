@@ -1,0 +1,16 @@
+{
+  "date": "2026-05-10",
+  "total_trades": 0,
+  "win_count": 0,
+  "loss_count": 0,
+  "win_rate": 0.0,
+  "gross_pnl_usdt": 0.0,
+  "net_pnl_usdt": 0.0,
+  "avg_win_usdt": 0.0,
+  "avg_loss_usdt": 0.0,
+  "profit_factor": 0.0,
+  "max_drawdown_pct": 0.0,
+  "sharpe_ratio": 0.0,
+  "best_strategy": "N/A",
+  "worst_strategy": "N/A"
+}

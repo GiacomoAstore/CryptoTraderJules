@@ -64,46 +64,44 @@ function App() {
           setToken(loginData.access_token);
           fetchTrades(loginData.access_token);
           fetchRealPortfolio(loginData.access_token);
+          
+          // Connect to WebSocket with token
+          const ws = new WebSocket(`ws://localhost:8000/ws/live?token=${loginData.access_token}`);
+
+          ws.onopen = () => {
+            setIsConnected(true);
+            console.log('Connected to API Gateway WebSocket');
+          };
+
+          ws.onmessage = (event) => {
+            try {
+              const msg = JSON.parse(event.data);
+              if (msg.channel.startsWith('ticks:')) {
+                setLatestTick(msg.data);
+              } else if (msg.channel === 'executed_trades') {
+                setTrades(prev => [msg.data, ...prev].slice(0, 50));
+              } else if (msg.channel === 'system' && msg.data.bot_status !== undefined) {
+                setBotEnabled(msg.data.bot_status === 'running');
+              } else if (msg.channel === 'portfolio') {
+                setPortfolio(msg.data);
+              }
+            } catch (err) {
+              console.error("Failed to parse websocket message", err);
+            }
+          };
+
+          ws.onclose = () => {
+            setIsConnected(false);
+            console.log('Disconnected from API Gateway WebSocket');
+          };
+          
+          return () => ws.close();
         }
       })
       .catch(err => console.error("Login failed:", err));
 
-    // Connect to WebSocket
-    const ws = new WebSocket('ws://localhost:8000/ws/live');
-
-
-    ws.onopen = () => {
-      setIsConnected(true);
-      console.log('Connected to API Gateway WebSocket');
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.channel.startsWith('ticks:')) {
-          setLatestTick(msg.data);
-        } else if (msg.channel === 'executed_trades') {
-          // Prepend new trade to the list
-          setTrades(prev => [msg.data, ...prev].slice(0, 50));
-        } else if (msg.channel === 'system' && msg.data.bot_enabled !== undefined) {
-          setBotEnabled(msg.data.bot_enabled);
-        } else if (msg.channel === 'portfolio') {
-          setPortfolio(msg.data);
-        }
-      } catch (err) {
-        console.error("Failed to parse websocket message", err);
-      }
-    };
-
-    ws.onclose = () => {
-      setIsConnected(false);
-      console.log('Disconnected from API Gateway WebSocket');
-    };
-
-    return () => {
-      ws.close();
-    };
   }, []);
+
 
   const toggleBot = async () => {
     try {
@@ -147,7 +145,7 @@ function App() {
 
       <div className="portfolio-dashboard" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px', marginBottom: '32px' }}>
         <div className="glass-panel stat-card">
-          <h3>Total Capital</h3>
+          <h3 style={{ color: 'var(--warning)' }}>Simulated Paper Capital</h3>
           <div className="stat-value" style={{ fontSize: '2.5rem', fontWeight: 'bold', color: 'var(--text)' }}>
             ${Number(portfolio.total_capital).toFixed(2)}
           </div>
@@ -264,29 +262,44 @@ function App() {
             <tr>
               <th>Symbol</th>
               <th>Side</th>
-              <th>Executed Price</th>
-              <th>Quantity</th>
-              <th>Fee</th>
+              <th>Price</th>
+              <th>Qty</th>
+              <th>Strategy</th>
+              <th>PnL</th>
+              <th>Time</th>
             </tr>
           </thead>
           <tbody>
             {trades.map((trade, i) => {
               const tradeSymbol = trade.symbol || (trade.order && trade.order.symbol);
               const side = trade.side || (trade.order && trade.order.type);
-              const price = trade.executed_price || trade.price || (trade.order && trade.order.price);
+              const price = trade.price || trade.executed_price || trade.exit_price || (trade.order && trade.order.price);
               const quantity = trade.quantity || (trade.order && trade.order.quantity);
+              const variant = trade.ab_variant || 'A';
               
               return (
                 <tr key={i}>
-                  <td style={{ fontWeight: 600 }}>{tradeSymbol}</td>
+                  <td style={{ fontWeight: 600 }}>
+                    {tradeSymbol} <span style={{ fontSize: '0.7rem', color: 'var(--primary)', border: '1px solid var(--primary)', padding: '1px 4px', borderRadius: '4px' }}>{variant}</span>
+                  </td>
                   <td>
                     <span className={side === 'BUY' ? 'tag-buy' : 'tag-sell'}>
                       {side}
                     </span>
                   </td>
-                  <td style={{ fontFamily: 'monospace', fontSize: '1.1rem' }}>${Number(price).toFixed(2)}</td>
-                  <td>{quantity || 'N/A'}</td>
-                  <td style={{ color: 'var(--text)' }}>{trade.fee ? `$${Number(trade.fee).toFixed(4)}` : '-'}</td>
+                  <td style={{ fontFamily: 'monospace', fontSize: '1.1rem' }}>
+                    {price ? `$${Number(price).toFixed(price < 1 ? 4 : 2)}` : '$0.00'}
+                  </td>
+                  <td style={{ fontFamily: 'monospace' }}>
+                    {quantity ? Number(quantity).toFixed(quantity < 1 ? 6 : 2) : 'N/A'}
+                  </td>
+                  <td style={{ color: 'var(--text-muted)' }}>
+                    {trade.strategy_name || 'System'}
+                  </td>
+                  <td style={{ color: trade.pnl_usdt > 0 ? 'var(--success)' : (trade.pnl_usdt < 0 ? 'var(--danger)' : 'var(--text)') }}>
+                    {trade.pnl_usdt ? `$${Number(trade.pnl_usdt).toFixed(2)}` : '-'}
+                  </td>
+                  <td style={{ color: 'var(--text-muted)' }}>{trade.time ? new Date(trade.time).toLocaleTimeString() : '-'}</td>
                 </tr>
               );
             })}

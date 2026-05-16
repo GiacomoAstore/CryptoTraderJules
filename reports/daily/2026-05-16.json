@@ -1,0 +1,16 @@
+{
+  "date": "2026-05-16",
+  "total_trades": 7,
+  "win_count": 0,
+  "loss_count": 7,
+  "win_rate": 0.0,
+  "gross_pnl_usdt": -0.004847169994043554,
+  "net_pnl_usdt": -12.021952959280362,
+  "avg_win_usdt": 0,
+  "avg_loss_usdt": -1.717421851325766,
+  "profit_factor": 0.0,
+  "max_drawdown_pct": 12.021952959280362,
+  "sharpe_ratio": -6.061157426771331,
+  "best_strategy": "System",
+  "worst_strategy": "System"
+}

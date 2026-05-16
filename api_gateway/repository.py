@@ -59,9 +59,18 @@ class TimescaleTradeRepository(TradeRepository):
         qty = trade_data.get("quantity", order.get("quantity", 0))
         strategy = order.get("strategy", "System")
 
+        from datetime import datetime
+        def parse_dt(dt_val):
+            if isinstance(dt_val, str):
+                try:
+                    return datetime.fromisoformat(dt_val.replace('Z', '+00:00'))
+                except:
+                    return datetime.now()
+            return dt_val if isinstance(dt_val, datetime) else datetime.now()
+
         async with self.pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO trades (time, id, symbol, side, entry_price, exit_price, quantity, pnl_usdt, pnl_pct, open_time, close_time, strategy_name, stop_loss_price, take_profit_price, close_reason) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+                "INSERT INTO trades (time, id, symbol, side, entry_price, exit_price, quantity, pnl_usdt, pnl_pct, fee, open_time, close_time, strategy_name, stop_loss_price, take_profit_price, close_reason, ab_variant) VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)",
                 str(trade_data.get("id", "mock-1")),
                 symbol.upper(),
                 side,
@@ -70,12 +79,14 @@ class TimescaleTradeRepository(TradeRepository):
                 float(qty),
                 float(trade_data.get("pnl_usdt", 0)),
                 float(trade_data.get("pnl_pct", 0)),
-                trade_data.get("open_time_dt", "2026-01-01 00:00:00"), # Would be properly converted
-                trade_data.get("close_time_dt", "2026-01-01 00:00:00"),
+                float(trade_data.get("fee", 0)),
+                parse_dt(trade_data.get("open_time_dt")),
+                parse_dt(trade_data.get("close_time_dt")),
                 strategy,
                 float(trade_data.get("stop_loss_price", 0)),
                 float(trade_data.get("take_profit_price", 0)),
-                trade_data.get("close_reason", "UNKNOWN")
+                trade_data.get("close_reason", "UNKNOWN"),
+                trade_data.get("ab_variant", "A")
             )
 
     async def get_performance_summary(self) -> Dict[str, Any]:

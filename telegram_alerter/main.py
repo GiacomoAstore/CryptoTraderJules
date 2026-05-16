@@ -69,16 +69,19 @@ async def format_and_send_trade(trade_data: dict):
     pnl_pct = trade_data.get("pnl_pct", 0.0)
     reason = trade_data.get("close_reason", "UNKNOWN")
 
-    emoji = "📈" if pnl_usdt > 0 else "📉"
-    
+    emoji = "📈" if float(pnl_usdt) > 0 else "📉"
+    variant = trade_data.get("ab_variant", "A")
+    strategy_name = trade_data.get("strategy_name", "UNKNOWN")
+
     text = (
-        f"{emoji} *TRADE CLOSED* {emoji}\n\n"
+        f"{emoji} *TRADE CLOSED [{escape_markdown(variant)}]* {emoji}\n\n"
         f"🏷 *Symbol:* {escape_markdown(symbol)}\n"
+        f"🧠 *Strategy:* {escape_markdown(strategy_name)}\n"
         f"🔄 *Side:* {escape_markdown(side)}\n"
-        f"💰 *Entry:* {escape_markdown(str(entry))}\n"
-        f"🎯 *Exit:* {escape_markdown(str(exit_p))}\n"
-        f"📦 *Qty:* {escape_markdown(str(round(qty, 6)))}\n"
-        f"💵 *PnL:* {escape_markdown(str(round(pnl_usdt, 2)))} USDT \\({escape_markdown(str(round(pnl_pct, 2)))}%\\)\n"
+        f"💰 *Entry:* {escape_markdown(str(round(float(entry), 4)))}\n"
+        f"🎯 *Exit:* {escape_markdown(str(round(float(exit_p), 4)))}\n"
+        f"📦 *Qty:* {escape_markdown(str(round(float(qty), 6)))}\n"
+        f"💵 *PnL:* {escape_markdown(str(round(float(pnl_usdt), 2)))} USDT \\({escape_markdown(str(round(float(pnl_pct), 2)))}%\\)\n"
         f"ℹ️ *Reason:* {escape_markdown(reason)}"
     )
     await send_telegram_message(text)
@@ -108,7 +111,7 @@ async def main():
             try:
                 data = json.loads(message["data"])
             except Exception as e:
-                logger.error(f"Failed to parse JSON message: {e}")
+                logger.error(f"Failed to parse JSON message. Channel: {channel} | Error: {e} | Raw: {message['data']}")
                 continue
 
             if channel == "executed_trades":

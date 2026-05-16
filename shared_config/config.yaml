@@ -1,28 +1,51 @@
 strategies:
-  - name: "EmaCrossoverStrategy"
+  - name: "EMAStrategy"
     enabled: true
     weight: 1
-    params:
+    variant_a:
       fast_period: 5
       slow_period: 20
+    variant_b:
+      fast_period: 3
+      slow_period: 10
 
   - name: "OrderBookImbalanceStrategy"
     enabled: true
     weight: 1
-    params:
-      imbalance_threshold: 1.5
+    variant_a:
+      imbalance_threshold: 0.65
+    variant_b:
+      imbalance_threshold: 0.60
 
   - name: "VWAPDeviationStrategy"
     enabled: true
     weight: 1
-    params:
+    variant_a:
       deviation_threshold: 0.005
+    variant_b:
+      deviation_threshold: 0.003
 
   - name: "MomentumBurstStrategy"
     enabled: true
     weight: 1
-    params:
-      volume_surge_threshold: 3.0
+    variant_a:
+      threshold_pct: 0.001
+      window_ms: 5000
+    variant_b:
+      threshold_pct: 0.0005
+      window_ms: 5000
+
+risk:
+  max_open_positions: 3
+  max_exposure_per_symbol_usdt: 1000.0
+  max_daily_loss_usdt: 50.0
+  max_consecutive_losses: 4
+  consecutive_loss_pause_minutes: 30
+  risk_per_trade_pct: 0.01
+  stop_loss_atr_multiplier: 2.0
+  take_profit_atr_multiplier: 5.0
+  min_profit_multiplier_vs_fees: 3.0
+  commission_rate: 0.001
 
 consensus:
   threshold: 2

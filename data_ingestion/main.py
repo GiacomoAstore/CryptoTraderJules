@@ -45,16 +45,17 @@ state = defaultdict(lambda: {
 })
 
 async def heartbeat_publisher(redis_client):
-    """Publishes a heartbeat to Redis every 30 seconds."""
+    """Publishes a heartbeat to Redis every 5 seconds for health monitoring."""
     while True:
         try:
             await redis_client.set("ingestion:heartbeat", int(time.time() * 1000))
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)
         except asyncio.CancelledError:
             break
         except Exception as e:
             logger.error("Heartbeat publisher error", extra={"error": str(e)})
-            await asyncio.sleep(5)
+            await asyncio.sleep(2)
+
 
 async def publish_tick(redis_client, symbol: str):
     s = state[symbol]

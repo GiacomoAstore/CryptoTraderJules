@@ -44,7 +44,7 @@ export default function ChartComponent({ symbol, tickData }) {
         if (tickData && tickData.symbol.toLowerCase() === symbol.toLowerCase() && lineSeriesRef.current) {
             // Update chart with new tick
             // lightweight-charts expects time in seconds (UNIX timestamp)
-            const time = Math.floor(tickData.timestamp / 1000);
+            const time = Math.floor(tickData.timestamp_ms / 1000);
 
             // Try to update using a try-catch because Lightweight Charts throws if times are not strictly ascending
             try {
