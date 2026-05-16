@@ -15,6 +15,24 @@ services:
       - cryptoscalper_net
     restart: unless-stopped
 
+  live_executor:
+    build: ./live_executor
+    container_name: cryptoscalper_live_executor
+    env_file:
+      - path: .env
+        required: false
+    secrets:
+      - binance_api_key
+      - binance_api_secret
+    depends_on:
+      redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - cryptoscalper_net
+    restart: unless-stopped
+
   signal_engine:
     build: ./signal_engine
     container_name: cryptoscalper_signal_engine
