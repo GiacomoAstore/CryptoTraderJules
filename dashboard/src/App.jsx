@@ -80,7 +80,7 @@ function App() {
       fetch('http://localhost:8000/api/kill-switch', { method: 'POST' })
         .then(res => res.json())
         .then(data => alert(data.message))
-        .catch(err => alert("Failed to trigger Kill Switch!"));
+        .catch(() => alert("Failed to trigger Kill Switch!"));
     }
   };
 
