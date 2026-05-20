@@ -5,6 +5,6 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --default-timeout=100 --no-cache-dir -r requirements.txt
 
-COPY main.py .
+COPY main.py risk_config.py ./
 
 CMD ["python", "main.py"]

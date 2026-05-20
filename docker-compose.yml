@@ -7,8 +7,21 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      TICK_PERSIST_ENABLED: "true"
+      TICK_FLUSH_INTERVAL_SEC: "1.0"
+      TICK_FLUSH_MAX_BATCH: "500"
+      DB_HOST: timescaledb
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-crypto_user}
+      DB_PASSWORD: ${DB_PASSWORD:-crypto_pass}
+      DB_NAME: ${DB_NAME:-cryptoscalper_db}
     depends_on:
       redis:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      api_gateway:
         condition: service_healthy
     networks:
       - cryptoscalper_net
@@ -41,7 +54,7 @@ services:
     networks:
       - cryptoscalper_net
     volumes:
-      - ./shared_config:/app/shared_config
+      - ./shared_config:/app/shared_config:ro
     restart: unless-stopped
 
   order_executor:
@@ -50,47 +63,73 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      PAPER_TRADING: "true"
     depends_on:
       redis:
         condition: service_healthy
       timescaledb:
+        condition: service_healthy
+      api_gateway:
         condition: service_healthy
     networks:
       - cryptoscalper_net
     restart: unless-stopped
 
   reporter:
-    build: ./reporter
+    build:
+      context: .
+      dockerfile: reporter/Dockerfile
     container_name: cryptoscalper_reporter
     env_file:
       - path: .env
         required: false
+    environment:
+      PHASE1_REPORT_TZ: Europe/Rome
+      PHASE1_REPORT_HOUR: "8"
+      PHASE1_REPORT_MINUTE: "0"
+      PHASE1_STRATEGY_CHECK_SEC: "600"
     depends_on:
       redis:
         condition: service_healthy
       timescaledb:
+        condition: service_healthy
+      api_gateway:
         condition: service_healthy
     networks:
       - cryptoscalper_net
     volumes:
       - ./reports:/app/reports
+      - ./scripts:/app/scripts:ro
+      - ./shared_config:/app/shared_config:ro
     restart: unless-stopped
 
+  # LLM advisor (read-only, Phase 1 safe): docker compose --profile llm up -d llm_optimizer
   llm_optimizer:
+    profiles: ["llm"]
     build: ./llm_optimizer
     container_name: cryptoscalper_llm_optimizer
     env_file:
       - path: .env
         required: false
+    environment:
+      LLM_MODE: advisor
+      LLM_PHASE1_SAFE: "true"
+      LLM_INTERVAL_SEC: "86400"
+      LLM_REPORTS_DIR: /app/reports
+      SHARED_CONFIG_PATH: /app/shared_config/config.yaml
     depends_on:
       redis:
         condition: service_healthy
       timescaledb:
         condition: service_healthy
+      api_gateway:
+        condition: service_healthy
     networks:
       - cryptoscalper_net
     volumes:
-      - ./shared_config:/app/shared_config
+      - ./shared_config:/app/shared_config:ro
+      - ./reports:/app/reports
     restart: unless-stopped
 
   api_gateway:
@@ -109,15 +148,20 @@ services:
     networks:
       - cryptoscalper_net
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+      test: ["CMD", "python", "verify_db_schema.py"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   dashboard:
-    build: ./dashboard
+    build:
+      context: ./dashboard
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
+        VITE_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
     container_name: cryptoscalper_dashboard
     ports:
       - "3000:80"
@@ -133,6 +177,8 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      PHASE1_QUIET: "true"
     depends_on:
       redis:
         condition: service_healthy

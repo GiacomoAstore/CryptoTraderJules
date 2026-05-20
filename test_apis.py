@@ -1,12 +1,17 @@
 import httpx
 import asyncio
+import os
 
 async def test_api():
     base_url = "http://localhost:8000"
-    
+    admin_password = os.getenv("ADMIN_PASSWORD", "admin")
+
     async with httpx.AsyncClient() as client:
         print("1. Testing /api/login")
-        resp = await client.post(f"{base_url}/api/login", data={"username": "admin", "password": "admin"})
+        resp = await client.post(
+            f"{base_url}/api/login",
+            data={"username": "admin", "password": admin_password},
+        )
         if resp.status_code != 200:
             print("Login failed:", resp.text)
             return

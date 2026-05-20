@@ -9,6 +9,7 @@
   --accent: #3b82f6;
   --success: #10b981;
   --danger: #ef4444;
+  --warning: #f59e0b;
   --shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
   --font-main: 'Outfit', sans-serif;
 }
@@ -129,4 +130,19 @@ h1, h2, h3 {
   background: rgba(239, 68, 68, 0.1);
   padding: 4px 10px;
   border-radius: 4px;
+}
+
+.mode-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.mode-paper {
+  color: var(--warning);
+  border: 1px solid var(--warning);
+  background: rgba(245, 158, 11, 0.12);
 }

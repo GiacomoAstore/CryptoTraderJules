@@ -3,6 +3,7 @@ import json
 import os
 import logging
 import subprocess
+import sys
 from datetime import datetime, timedelta
 from typing import Optional, Union
 
@@ -23,9 +24,10 @@ app = FastAPI(title="CryptoScalper Pro API Gateway")
 
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,6 +35,31 @@ app.add_middleware(
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+
+INSECURE_JWT_DEFAULT = "super-secret-key"
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+SECRET_KEY = ""
+ADMIN_PASSWORD = ""
+
+
+def _resolve_security_config() -> tuple[str, str]:
+    jwt_secret = os.getenv("JWT_SECRET", "")
+    admin_password = os.getenv("ADMIN_PASSWORD", "")
+
+    if ENVIRONMENT == "production":
+        if not jwt_secret or jwt_secret == INSECURE_JWT_DEFAULT:
+            raise RuntimeError("JWT_SECRET must be set to a secure value when ENVIRONMENT=production")
+        if not admin_password:
+            raise RuntimeError("ADMIN_PASSWORD must be set when ENVIRONMENT=production")
+        return jwt_secret, admin_password
+
+    if not jwt_secret:
+        logger.warning("JWT_SECRET not set; using insecure default (development only)")
+        jwt_secret = INSECURE_JWT_DEFAULT
+    if not admin_password:
+        logger.warning("ADMIN_PASSWORD not set; using default 'admin' (development only)")
+        admin_password = "admin"
+    return jwt_secret, admin_password
 
 class ConnectionManager:
     def __init__(self):
@@ -68,16 +95,26 @@ background_tasks = set()
 
 @app.on_event("startup")
 async def startup_event():
-    # Run Alembic migrations using subprocess to avoid asyncio loop conflicts
+    global SECRET_KEY, ADMIN_PASSWORD
+    SECRET_KEY, ADMIN_PASSWORD = _resolve_security_config()
+
+    # Migrations + verify run in entrypoint.sh before uvicorn; double-check at runtime.
     try:
-        logger.info("Running Database Migrations...")
-        result = subprocess.run(["alembic", "upgrade", "head"], capture_output=True, text=True)
-        if result.returncode == 0:
-            logger.info("Database Migrations completed successfully.")
-        else:
-            logger.error(f"Alembic migration failed: {result.stderr}")
+        result = subprocess.run(
+            [sys.executable, "verify_db_schema.py"],
+            capture_output=True,
+            text=True,
+            cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
+        )
+        if result.returncode != 0:
+            logger.error("DB schema verify failed:\n%s\n%s", result.stdout, result.stderr)
+            raise RuntimeError("Database schema verification failed — service unhealthy")
+        logger.info("Database schema verification passed.")
+    except RuntimeError:
+        raise
     except Exception as e:
-        logger.error(f"Failed to run Alembic migrations: {e}")
+        logger.error("Failed to verify database schema: %s", e)
+        raise RuntimeError("Database schema verification failed") from e
 
     # Connect to TimescaleDB
     await trade_repo.connect()
@@ -145,7 +182,6 @@ async def redis_listener():
             print(f"Redis listener crashed: {e}. Reconnecting in 3 seconds...")
             await asyncio.sleep(3)
 
-SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-key")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24
 
@@ -169,15 +205,33 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
 @app.post("/api/login")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    # Hardcoded admin for MVP
-    if form_data.username == "admin" and form_data.password == os.getenv("ADMIN_PASSWORD", "admin"):
+    if not SECRET_KEY:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service not ready")
+    if form_data.username == "admin" and form_data.password == ADMIN_PASSWORD:
         access_token = create_access_token(data={"sub": form_data.username}, expires_delta=timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
         return {"access_token": access_token, "token_type": "bearer"}
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Incorrect username or password")
 
 @app.get("/")
 def read_root():
-    return {"status": "ok", "service": "CryptoScalper API Gateway"}
+    return {"status": "ok", "service": "CryptoScalper API Gateway", "db_revision": "0001_baseline"}
+
+
+@app.get("/health/db")
+def health_db():
+    """Lightweight DB schema probe for ops."""
+    result = subprocess.run(
+        [sys.executable, "verify_db_schema.py"],
+        capture_output=True,
+        text=True,
+        cwd=os.path.dirname(os.path.abspath(__file__)) or ".",
+    )
+    if result.returncode != 0:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(result.stderr or result.stdout or "schema verify failed")[:500],
+        )
+    return {"status": "ok", "schema": "0001_baseline"}
 
 @app.get("/api/portfolio/real")
 async def get_real_portfolio(user: str = Depends(get_current_user)):
@@ -286,6 +340,25 @@ async def get_performance_summary(user: str = Depends(get_current_user)):
 async def get_performance_daily(user: str = Depends(get_current_user)):
     return {"status": "ok", "daily": []}
 
+@app.get("/api/db/tables")
+async def get_db_tables(user: str = Depends(get_current_user)):
+    try:
+        tables = await trade_repo.get_tables()
+        return {"status": "ok", "tables": tables}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/db/table/{table_name}")
+async def query_db_table(table_name: str, request: Request, user: str = Depends(get_current_user)):
+    try:
+        body = await request.json()
+        limit = body.get("limit", 100)
+        filters = body.get("filters", {})
+        rows = await trade_repo.query_table(table_name, limit=limit, filters=filters)
+        return {"status": "ok", "data": rows}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 @app.get("/api/config")
 async def get_config(user: str = Depends(get_current_user)):
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -302,7 +375,7 @@ async def get_config(user: str = Depends(get_current_user)):
 async def update_config(config: dict, user: str = Depends(get_current_user)):
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
     await redis_client.set("config:risk", json.dumps(config))
-    # In a real scenario we might broadcast a RELOAD_CONFIG command
+    await redis_client.publish("system:commands", "RELOAD_CONFIG")
     await manager.broadcast(json.dumps({"channel": "system:commands", "data": "RELOAD_CONFIG"}))
     return {"status": "ok"}
 

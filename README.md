@@ -2,32 +2,86 @@
 
 CryptoScalper Pro is an algorithmic trading platform designed to execute high-frequency scalping strategies on Binance. It captures micro-price movements by constantly monitoring the market 24/7.
 
+**Current mode:** paper trading simulation (no live orders on the exchange).
+
 ## Architecture
 
-The system is built as a microservice architecture using Docker Compose. It features:
-*   **Data Ingestion Service:** Connects to Binance WebSockets, normalizes ticks, and publishes them to Redis.
-*   **Signal Engine:** Implements the Strategy Pattern to analyze ticks and generate buy/sell signals.
-*   **Risk Manager:** Implements the Circuit Breaker Pattern to evaluate signals against risk thresholds.
-*   **Order Executor:** Implements the Command Pattern to execute approved orders.
-*   **API Gateway:** A FastAPI service implementing the Repository Pattern to expose REST endpoints and push live data to the frontend via WebSockets.
-*   **Dashboard:** A React application (powered by Vite) displaying live TradingView charts and a list of executed trades.
-*   **TimescaleDB & Redis:** Used for time-series persistence and event-driven pub/sub communication, respectively.
+The system is built as a microservice architecture using Docker Compose:
+
+| Service | Role |
+|---------|------|
+| `data_ingestion` | Binance WebSocket → normalized ticks on Redis |
+| `signal_engine` | Multi-strategy consensus + A/B variants |
+| `risk_manager` | Sizing, circuit breaker, fee checks |
+| `order_executor` | Paper fill engine (SL/TP/timeout) |
+| `api_gateway` | REST + WebSocket + DB migrations (Alembic) |
+| `dashboard` | React UI (Vite) |
+| `reporter` | Daily PnL report + Telegram |
+| `telegram_alerter` | Trade/system alerts |
+| `llm_optimizer` | Optional Groq-based config tuning |
+| `redis` | Pub/Sub bus |
+| `timescaledb` | Trade history + positions |
+
+## Ports (host)
+
+| Port | Service |
+|------|---------|
+| 3000 | Dashboard (nginx) |
+| 8000 | API Gateway |
+| 6379 | Redis |
+| 5432 | TimescaleDB |
 
 ## How to Run
 
-1.  **Environment Variables:** You MUST create an environment file before starting the cluster. Copy the example file:
-    ```bash
-    cp .env.example .env
-    ```
-    *Open `.env` and fill in your Binance API keys and other configuration as needed.*
+1. Ensure a `.env` file exists in the project root (API keys, `JWT_SECRET`, `ADMIN_PASSWORD`, DB credentials).
+2. Start the stack:
+   ```bash
+   docker compose up --build
+   ```
+3. Open the dashboard: `http://localhost:3000`
+4. **Start the bot** from the UI (or `POST /api/bot/start`) — trading is stopped by default.
 
-2.  **Start the Cluster:** Bring up all 8 containers using Docker Compose:
-    ```bash
-    docker compose up --build
-    ```
+### Dashboard API URL (optional)
 
-3.  **View Dashboard:** Once the services have started, open your browser and navigate to `http://localhost:3000`.
+Set in `.env` before building the dashboard image:
+
+```env
+VITE_API_URL=http://localhost:8000
+VITE_WS_URL=ws://localhost:8000
+ADMIN_PASSWORD=your-password
+```
+
+Then rebuild: `docker compose build dashboard`
+
+## Database schema
+
+- **Bootstrap:** `init_db.sql` only enables the TimescaleDB extension.
+- **Tables:** managed by Alembic in `api_gateway/alembic/` (including `trades`, `orders`, `positions`).
+
+On first start, `api_gateway` runs `alembic upgrade head`.
+
+## Tests
+
+Unit tests (no Docker required):
+
+```bash
+pip install -r tests/requirements.txt
+pytest tests/ -m "not integration"
+```
+
+Integration tests (Redis + full stack):
+
+```bash
+docker compose up -d
+INTEGRATION_STACK=1 pytest tests/integration/ -m integration
+```
+
+Smoke test API (stack running):
+
+```bash
+python test_apis.py
+```
 
 ## Important Note
 
-High-frequency algorithmic trading involves significant risk. Always test in **PAPER** trading mode before using real funds.
+High-frequency algorithmic trading involves significant risk. Always test in **PAPER** mode before using real funds. The dashboard labels paper vs read-only Binance account explicitly.

@@ -1,12 +1,22 @@
 import { useState, useEffect } from 'react';
 import ChartComponent from './ChartComponent';
+import DbViewer from './DbViewer';
+import { apiUrl, wsUrl } from './api';
 import './App.css';
 
+const AVAILABLE_SYMBOLS = [
+  'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
+  'ADAUSDT', 'DOGEUSDT', 'SHIBUSDT', 'AVAXUSDT', 'DOTUSDT',
+  'LINKUSDT', 'TRXUSDT', 'LTCUSDT', 'BCHUSDT',
+  'UNIUSDT', 'XLMUSDT', 'NEARUSDT', 'ATOMUSDT', 'APTUSDT'
+];
+
 function App() {
+  const [currentTab, setCurrentTab] = useState('dashboard');
+  const [activeCharts, setActiveCharts] = useState(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
   const [isConnected, setIsConnected] = useState(false);
   const [latestTick, setLatestTick] = useState(null);
   const [trades, setTrades] = useState([]);
-  const [symbol] = useState('btcusdt');
   const [botEnabled, setBotEnabled] = useState(false);
   const [portfolio, setPortfolio] = useState({
     total_capital: 0,
@@ -18,11 +28,25 @@ function App() {
     total_value_usdt: 0,
     balances: []
   });
-  
+
   const [token, setToken] = useState(null);
+  const [authError, setAuthError] = useState(null);
+
+  const fetchBotStatus = (jwt) => {
+    fetch(apiUrl('/api/bot/status'), {
+      headers: { 'Authorization': `Bearer ${jwt}` }
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.status) {
+          setBotEnabled(data.status === 'running');
+        }
+      })
+      .catch((err) => console.error("Failed to fetch bot status:", err));
+  };
 
   const fetchTrades = (jwt) => {
-    fetch('http://localhost:8000/api/trades', {
+    fetch(apiUrl('/api/trades'), {
       headers: { 'Authorization': `Bearer ${jwt}` }
     })
       .then((res) => res.json())
@@ -35,7 +59,7 @@ function App() {
   };
 
   const fetchRealPortfolio = (jwt) => {
-    fetch('http://localhost:8000/api/portfolio/real', {
+    fetch(apiUrl('/api/portfolio/real'), {
       headers: { 'Authorization': `Bearer ${jwt}` }
     })
       .then((res) => res.json())
@@ -48,25 +72,31 @@ function App() {
   };
 
   useEffect(() => {
-    // 1. Authenticate to get real JWT token
     const formData = new URLSearchParams();
     formData.append('username', 'admin');
-    formData.append('password', 'admin');
+    formData.append('password', import.meta.env.VITE_ADMIN_PASSWORD || 'admin');
 
-    fetch('http://localhost:8000/api/login', {
+    fetch(apiUrl('/api/login'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: formData.toString()
     })
-      .then(res => res.json())
+      .then(async (res) => {
+        const loginData = await res.json();
+        if (!res.ok) {
+          throw new Error(loginData.detail || `Login failed (${res.status})`);
+        }
+        return loginData;
+      })
       .then(loginData => {
         if (loginData.access_token) {
+          setAuthError(null);
           setToken(loginData.access_token);
           fetchTrades(loginData.access_token);
           fetchRealPortfolio(loginData.access_token);
-          
-          // Connect to WebSocket with token
-          const ws = new WebSocket(`ws://localhost:8000/ws/live?token=${loginData.access_token}`);
+          fetchBotStatus(loginData.access_token);
+
+          const ws = new WebSocket(wsUrl(`/ws/live?token=${loginData.access_token}`));
 
           ws.onopen = () => {
             setIsConnected(true);
@@ -94,11 +124,17 @@ function App() {
             setIsConnected(false);
             console.log('Disconnected from API Gateway WebSocket');
           };
-          
+
           return () => ws.close();
         }
       })
-      .catch(err => console.error("Login failed:", err));
+      .catch(err => {
+        console.error("Login failed:", err);
+        setAuthError(
+          'Login fallito: la password nel build della dashboard non coincide con ADMIN_PASSWORD nel .env. ' +
+          'Esegui: docker compose build dashboard --no-cache && docker compose up -d dashboard'
+        );
+      });
 
   }, []);
 
@@ -106,7 +142,7 @@ function App() {
   const toggleBot = async () => {
     try {
       const newState = !botEnabled;
-      const response = await fetch(`http://localhost:8000/api/bot/toggle?enabled=${newState}`, {
+      const response = await fetch(apiUrl(`/api/bot/toggle?enabled=${newState}`), {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -118,27 +154,58 @@ function App() {
     }
   };
 
+  const toggleChart = (symbol) => {
+    setActiveCharts(prev => {
+      if (prev.includes(symbol)) {
+        return prev.filter(s => s !== symbol);
+      }
+      if (prev.length >= 3) {
+        return [...prev.slice(1), symbol];
+      }
+      return [...prev, symbol];
+    });
+  };
+
+  if (currentTab === 'db_viewer' && token) {
+    return <DbViewer token={token} onBack={() => setCurrentTab('dashboard')} />;
+  }
+
   return (
     <div className="dashboard-container">
       <div className="header glass-panel">
         <div>
           <h1>CryptoScalper Pro</h1>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <div style={{
-              width: '10px', height: '10px', borderRadius: '50%',
-              background: isConnected ? 'var(--success)' : 'var(--danger)',
-              boxShadow: isConnected ? '0 0 10px var(--success)' : 'none'
-            }}></div>
-            <span>{isConnected ? 'System Online' : 'System Offline'}</span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+            <span className="mode-badge mode-paper">PAPER TRADING</span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{
+                width: '10px', height: '10px', borderRadius: '50%',
+                background: isConnected ? 'var(--success)' : 'var(--danger)',
+                boxShadow: isConnected ? '0 0 10px var(--success)' : 'none'
+              }}></div>
+              <span>{isConnected ? 'System Online' : 'System Offline'}</span>
+            </div>
+            <button 
+              className="btn-toggle inactive" 
+              style={{ marginLeft: '16px', padding: '4px 12px', fontSize: '0.9rem' }}
+              onClick={() => setCurrentTab('db_viewer')}
+            >
+              📊 Database Viewer
+            </button>
           </div>
         </div>
-        
+        {authError && (
+          <p style={{ color: 'var(--danger)', marginTop: '12px', fontSize: '0.9rem', maxWidth: '720px' }}>
+            {authError}
+          </p>
+        )}
+
         <div>
-          <button 
+          <button
             className={`btn-toggle ${botEnabled ? 'active' : 'inactive'}`}
             onClick={toggleBot}
           >
-            {botEnabled ? 'BOT ACTIVE (LIVE)' : 'BOT PAUSED'}
+            {botEnabled ? 'BOT RUNNING (PAPER)' : 'BOT PAUSED'}
           </button>
         </div>
       </div>
@@ -155,10 +222,10 @@ function App() {
         </div>
 
         <div className="glass-panel stat-card">
-          <h3>Net Profit / Loss</h3>
-          <div className="stat-value" style={{ 
-            fontSize: '2.5rem', 
-            fontWeight: 'bold', 
+          <h3>Net Profit / Loss (Paper)</h3>
+          <div className="stat-value" style={{
+            fontSize: '2.5rem',
+            fontWeight: 'bold',
             color: portfolio.net_profit >= 0 ? 'var(--success)' : 'var(--danger)'
           }}>
             {portfolio.net_profit >= 0 ? '+' : ''}${Number(portfolio.net_profit).toFixed(2)}
@@ -166,7 +233,7 @@ function App() {
         </div>
 
         <div className="glass-panel stat-card" style={{ gridColumn: '1 / -1' }}>
-          <h3>Active Holdings</h3>
+          <h3>Active Holdings (Paper)</h3>
           <table className="data-table">
             <thead>
               <tr>
@@ -188,7 +255,7 @@ function App() {
               {portfolio.holdings.length === 0 && (
                 <tr>
                   <td colSpan="4" style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)' }}>
-                    No active positions.
+                    No active paper positions.
                   </td>
                 </tr>
               )}
@@ -199,7 +266,7 @@ function App() {
 
       <div className="portfolio-dashboard" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px', marginBottom: '32px' }}>
         <div className="glass-panel stat-card" style={{ gridColumn: '1 / -1', background: 'rgba(20, 25, 40, 0.7)', border: '1px solid var(--primary)' }}>
-          <h3 style={{ color: 'var(--primary)' }}>Real Binance Portfolio</h3>
+          <h3 style={{ color: 'var(--primary)' }}>Binance Account (Read-Only)</h3>
           <div style={{ marginBottom: '16px' }}>
             <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>Total Value: </span>
             <span style={{ fontSize: '2rem', fontWeight: 'bold', color: 'var(--text)' }}>
@@ -227,7 +294,7 @@ function App() {
               {(!realPortfolio.balances || realPortfolio.balances.length === 0) && (
                 <tr>
                   <td colSpan="4" style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)' }}>
-                    Loading real portfolio or no assets found.
+                    No Binance balances or API keys not configured.
                   </td>
                 </tr>
               )}
@@ -237,26 +304,52 @@ function App() {
       </div>
 
       <h2 style={{ marginBottom: '16px' }}>Live Market Analysis</h2>
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '32px' }}>
-        <div className="glass-panel">
-          <ChartComponent symbol="BTCUSDT" tickData={latestTick} />
+      <div style={{ display: 'flex', gap: '20px', marginBottom: '32px' }}>
+        <div style={{ flex: '1', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px' }}>
+          {activeCharts.map(symbol => (
+            <div className="glass-panel" key={symbol}>
+              <ChartComponent symbol={symbol} tickData={latestTick} />
+            </div>
+          ))}
+          {activeCharts.length === 0 && (
+            <div className="glass-panel" style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '300px' }}>
+              <p style={{ color: 'var(--text-muted)' }}>Select symbols on the right to view charts.</p>
+            </div>
+          )}
         </div>
-        <div className="glass-panel">
-          <ChartComponent symbol="ETHUSDT" tickData={latestTick} />
-        </div>
-        <div className="glass-panel">
-          <ChartComponent symbol="BNBUSDT" tickData={latestTick} />
-        </div>
-        <div className="glass-panel">
-          <ChartComponent symbol="SOLUSDT" tickData={latestTick} />
-        </div>
-        <div className="glass-panel" style={{ gridColumn: '1 / -1' }}>
-          <ChartComponent symbol="XRPUSDT" tickData={latestTick} />
+        
+        <div className="glass-panel" style={{ width: '250px', maxHeight: '500px', overflowY: 'auto' }}>
+          <h3 style={{ marginTop: 0, marginBottom: '12px', fontSize: '1rem' }}>Select Charts (Max 3)</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {AVAILABLE_SYMBOLS.map(symbol => {
+              const isActive = activeCharts.includes(symbol);
+              return (
+                <button
+                  key={symbol}
+                  onClick={() => toggleChart(symbol)}
+                  style={{
+                    padding: '8px',
+                    textAlign: 'left',
+                    background: isActive ? 'var(--primary)' : 'rgba(0,0,0,0.3)',
+                    border: '1px solid rgba(255,255,255,0.1)',
+                    color: 'white',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    display: 'flex',
+                    justifyContent: 'space-between'
+                  }}
+                >
+                  <span>{symbol}</span>
+                  {isActive && <span>✓</span>}
+                </button>
+              );
+            })}
+          </div>
         </div>
       </div>
 
       <div className="glass-panel">
-        <h2>Recent Execution Log</h2>
+        <h2>Recent Execution Log (Paper)</h2>
         <table className="data-table">
           <thead>
             <tr>
@@ -276,7 +369,7 @@ function App() {
               const price = trade.price || trade.executed_price || trade.exit_price || (trade.order && trade.order.price);
               const quantity = trade.quantity || (trade.order && trade.order.quantity);
               const variant = trade.ab_variant || 'A';
-              
+
               return (
                 <tr key={i}>
                   <td style={{ fontWeight: 600 }}>
@@ -305,8 +398,8 @@ function App() {
             })}
             {trades.length === 0 && (
               <tr>
-                <td colSpan="5" style={{ textAlign: 'center', padding: '32px', color: 'var(--text)' }}>
-                  No trades executed yet. The algorithm is waiting for optimal conditions.
+                <td colSpan="7" style={{ textAlign: 'center', padding: '32px', color: 'var(--text)' }}>
+                  No paper trades yet. Start the bot and wait for market conditions.
                 </td>
               </tr>
             )}

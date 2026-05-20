@@ -1,131 +1,74 @@
+"""
+LLM Optimizer — modes:
+  advisor (default)  : read-only analysis → reports/llm_advisory_*.md (Phase 1 safe)
+  disabled           : no-op
+  apply              : legacy auto config.yaml rewrite (Phase 2+ only, gated)
+"""
+from __future__ import annotations
+
 import asyncio
-import os
 import logging
-import asyncpg
-import yaml
-from openai import AsyncOpenAI
-import redis.asyncio as redis
+import os
+import sys
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LLMOptimizer")
 
-DB_DSN = f"postgresql://{os.getenv('DB_USER', 'crypto_user')}:{os.getenv('DB_PASSWORD', 'crypto_pass')}@{os.getenv('DB_HOST', 'timescaledb')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', 'cryptoscalper_db')}"
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-SHARED_CONFIG_PATH = "/app/shared_config/config.yaml"
+INTERVAL_SEC = int(os.getenv("LLM_INTERVAL_SEC", str(24 * 60 * 60)))  # daily by default
+MODE = os.getenv("LLM_MODE", "advisor").lower()
+PHASE1_SAFE = os.getenv("LLM_PHASE1_SAFE", "true").lower() == "true"
 
-# Esecuzione ogni 4 ore (in secondi) per risparmiare token
-OPTIMIZATION_INTERVAL = 4 * 60 * 60
 
-SYSTEM_PROMPT = """You are an expert algorithmic trading quantitative analyst. 
-Your task is to analyze the recent performance metrics of a high-frequency trading bot and output a new, optimized `config.yaml` file for the signal engine.
-
-Rules:
-1. ONLY return the valid YAML code. Do not wrap it in markdown code blocks (e.g. no ```yaml). Do not output any conversational text.
-2. If a strategy has a terrible win rate (e.g., < 40%) or high loss, consider reducing its weight or disabling it.
-3. If a strategy is highly profitable, increase its weight slightly.
-4. Keep the 'consensus' threshold reasonable compared to the sum of active weights.
-"""
-
-async def fetch_performance_metrics():
-    try:
-        pool = await asyncpg.create_pool(dsn=DB_DSN)
-        # We assume recent trades to calculate win rate per strategy.
-        # This is a simplified query; in production, we would calculate actual PnL.
-        async with pool.acquire() as conn:
-            rows = await conn.fetch('''
-                SELECT strategy_name as strategy, 
-                       COUNT(*) as total_trades,
-                       COUNT(CASE WHEN pnl_usdt > 0 THEN 1 END) as wins
-                FROM trades 
-                GROUP BY strategy_name
-            ''')
-            
-            metrics = {}
-            for row in rows:
-                total = row['total_trades']
-                wins = row['wins']
-                win_rate = (wins / total) if total > 0 else 0
-                metrics[row['strategy']] = {
-                    'total_trades': total,
-                    'win_rate': round(win_rate, 2)
-                }
-            
-            await pool.close()
-            return metrics
-    except Exception as e:
-        logger.error(f"Failed to fetch metrics: {e}")
-        return {}
-
-async def optimize_config():
-    api_key = os.getenv("GROQ_API_KEY")
-    if not api_key or api_key == "your_groq_api_key":
-        logger.warning("Groq API Key not set. Skipping optimization.")
-        return
-
-    metrics = await fetch_performance_metrics()
-    
-    if not os.path.exists(SHARED_CONFIG_PATH):
-        logger.warning(f"Config file not found at {SHARED_CONFIG_PATH}. Skipping.")
-        return
-
-    with open(SHARED_CONFIG_PATH, "r") as f:
-        current_config_str = f.read()
-
-    logger.info("Calling Groq Llama 3 70B API...")
-    # Groq uses the OpenAI SDK format
-    client = AsyncOpenAI(api_key=api_key, base_url="https://api.groq.com/openai/v1")
-    
-    prompt = f"Current Metrics:\n{metrics}\n\nCurrent config.yaml:\n{current_config_str}\n\nPlease provide the optimized YAML."
-
-    try:
-        response = await client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            temperature=0.2,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": prompt}
-            ]
+async def _run_apply_mode() -> None:
+    if PHASE1_SAFE:
+        logger.error(
+            "LLM_MODE=apply blocked: LLM_PHASE1_SAFE=true (Phase 1). "
+            "Use advisor mode or set LLM_PHASE1_SAFE=false after gate exit."
         )
-        
-        new_yaml = response.choices[0].message.content.strip()
-        
-        # Remove markdown if the LLM hallucinated it
-        if new_yaml.startswith("```yaml"):
-            new_yaml = new_yaml.split("```yaml")[1]
-        if new_yaml.startswith("```"):
-            new_yaml = new_yaml.split("```")[1]
-        if new_yaml.endswith("```"):
-            new_yaml = new_yaml.rsplit("```", 1)[0]
-            
-        new_yaml = new_yaml.strip()
+        return
 
-        # Validate YAML
-        yaml.safe_load(new_yaml)
-        
-        # Save to file
-        with open(SHARED_CONFIG_PATH, "w") as f:
-            f.write(new_yaml)
-        
-        logger.info("Successfully updated config.yaml.")
-        
-        # Trigger Hot Reload
-        redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-        await redis_client.publish("system:commands", "RELOAD_CONFIG")
-        logger.info("Published RELOAD_CONFIG command to Redis.")
+    allow = os.getenv("LLM_ALLOW_CONFIG_WRITE", "false").lower() == "true"
+    if not allow:
+        logger.error("LLM_MODE=apply requires LLM_ALLOW_CONFIG_WRITE=true")
+        return
 
-    except Exception as e:
-        logger.error(f"Optimization failed: {e}")
+    # Legacy path — import only when explicitly enabled
+    from legacy_apply import optimize_config
 
-async def main():
-    logger.info("LLM Optimizer Agent Started.")
-    # Wait for the system to boot up fully before starting the loop
-    await asyncio.sleep(60)
-    
+    await optimize_config()
+
+
+async def _run_advisor_mode() -> None:
+    from advisor import run_advisory
+
+    path = await run_advisory()
+    if path:
+        logger.info("Advisor run complete: %s", path)
+
+
+async def main() -> None:
+    logger.info("LLM Optimizer started — mode=%s phase1_safe=%s", MODE, PHASE1_SAFE)
+    await asyncio.sleep(int(os.getenv("LLM_BOOT_DELAY_SEC", "60")))
+
     while True:
-        await optimize_config()
-        logger.info(f"Sleeping for {OPTIMIZATION_INTERVAL / 3600} hours...")
-        await asyncio.sleep(OPTIMIZATION_INTERVAL)
+        if MODE == "disabled":
+            logger.debug("LLM_MODE=disabled — sleeping")
+        elif MODE == "advisor":
+            try:
+                await _run_advisor_mode()
+            except Exception as exc:
+                logger.error("Advisor run failed: %s", exc)
+        elif MODE == "apply":
+            try:
+                await _run_apply_mode()
+            except Exception as exc:
+                logger.error("Apply run failed: %s", exc)
+        else:
+            logger.error("Unknown LLM_MODE=%r — use advisor|disabled|apply", MODE)
+
+        logger.info("Next LLM run in %.1f hours", INTERVAL_SEC / 3600)
+        await asyncio.sleep(INTERVAL_SEC)
+
 
 if __name__ == "__main__":
     asyncio.run(main())

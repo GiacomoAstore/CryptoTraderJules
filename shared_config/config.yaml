@@ -1,51 +1,127 @@
+# Signal engine — conservative scalping stack (fee-aware)
+signal_engine:
+  aggregation: momentum_ema_strict
+  ema_min_separation_bps: 3
+  max_signals_per_hour_per_symbol: 15
+
+signal_filters:
+  max_spread_bps: 10
+  min_atr_pct: 0.00004
+  max_atr_pct: 0.022
+  min_volume_window: 0.05
+  volume_window_ms: 3000
+  max_chop_ratio: 5.5
+  commission_rate: 0.001
+  min_edge_vs_fees_mult: 2.0
+  min_expected_move_bps: 12
+
 strategies:
-  - name: "EMAStrategy"
+  - name: "EMACrossoverStrategy"
     enabled: true
-    weight: 1
+    weight: 1.2
     variant_a:
-      fast_period: 5
-      slow_period: 20
+      fast_period: 8
+      slow_period: 21
+      min_separation_bps: 3
+      max_spread_bps: 10
+      min_book_qty: 0.01
     variant_b:
-      fast_period: 3
-      slow_period: 10
+      fast_period: 5
+      slow_period: 13
+      min_separation_bps: 5
+      max_spread_bps: 8
+      min_book_qty: 0.02
 
   - name: "OrderBookImbalanceStrategy"
-    enabled: true
-    weight: 1
+    enabled: false
+    weight: 1.0
     variant_a:
-      imbalance_threshold: 0.65
+      imbalance_threshold: 0.62
+      min_ratio_delta: 0.05
+      min_trade_qty: 0.001
+      max_spread_bps: 8
+      min_book_qty: 0.05
     variant_b:
-      imbalance_threshold: 0.60
-
-  - name: "VWAPDeviationStrategy"
-    enabled: true
-    weight: 1
-    variant_a:
-      deviation_threshold: 0.005
-    variant_b:
-      deviation_threshold: 0.003
+      imbalance_threshold: 0.66
+      min_ratio_delta: 0.06
+      min_trade_qty: 0.002
+      max_spread_bps: 6
+      min_book_qty: 0.1
 
   - name: "MomentumBurstStrategy"
     enabled: true
-    weight: 1
+    weight: 0.9
     variant_a:
-      threshold_pct: 0.001
-      window_ms: 5000
+      atr_mult: 1.25
+      window_ms: 3500
+      min_volume: 0.15
+      max_spread_bps: 10
     variant_b:
-      threshold_pct: 0.0005
-      window_ms: 5000
+      atr_mult: 1.5
+      window_ms: 2500
+      min_volume: 0.25
+      max_spread_bps: 8
 
-risk:
-  max_open_positions: 3
-  max_exposure_per_symbol_usdt: 1000.0
-  max_daily_loss_usdt: 50.0
-  max_consecutive_losses: 4
-  consecutive_loss_pause_minutes: 30
-  risk_per_trade_pct: 0.01
-  stop_loss_atr_multiplier: 2.0
-  take_profit_atr_multiplier: 5.0
-  min_profit_multiplier_vs_fees: 3.0
-  commission_rate: 0.001
+  - name: "VWAPDeviationStrategy"
+    enabled: false
+    weight: 0.8
+    variant_a:
+      deviation_threshold: 0.0035
+      min_ticks: 20
+      rsi_oversold: 32
+      rsi_overbought: 68
+      max_spread_bps: 10
+    variant_b:
+      deviation_threshold: 0.0028
+      min_ticks: 25
+      rsi_oversold: 28
+      rsi_overbought: 72
+      max_spread_bps: 8
+
+  - name: "VolatilityExpansionStrategy"
+    enabled: false
+    weight: 1.0
+    variant_a:
+      squeeze_chop_max: 2.2
+      breakout_atr_mult: 1.4
+      max_spread_bps: 10
+    variant_b:
+      squeeze_chop_max: 1.8
+      breakout_atr_mult: 1.6
+      max_spread_bps: 8
+
+  - name: "BollingerMeanReversionStrategy"
+    enabled: false
+    weight: 0.7
+    variant_a:
+      period: 20
+      std_mult: 2.0
+      max_spread_bps: 10
+    variant_b:
+      period: 16
+      std_mult: 2.2
+      max_spread_bps: 8
+
+  - name: "MicroStructureBreakoutStrategy"
+    enabled: false
+    weight: 0.6
+    variant_a:
+      lookback: 25
+      pierce_bps: 2.5
+      max_spread_bps: 8
 
 consensus:
-  threshold: 2
+  threshold: 3
+
+risk:
+  max_open_positions: 2
+  max_exposure_per_symbol_usdt: 500.0
+  max_daily_loss_usdt: 40.0
+  max_consecutive_losses: 3
+  consecutive_loss_pause_minutes: 45
+  risk_per_trade_pct: 0.008
+  stop_loss_atr_multiplier: 1.8
+  take_profit_atr_multiplier: 2.0
+  min_profit_multiplier_vs_fees: 2.0
+  commission_rate: 0.00075
+  entry_pullback_bps: 13.0

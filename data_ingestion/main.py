@@ -9,6 +9,8 @@ import redis.asyncio as redis
 import websockets
 from pythonjsonlogger import jsonlogger
 
+from tick_writer import TickWriter
+
 # Setup structured logging
 logger = logging.getLogger("DataIngestion")
 logger.setLevel(logging.INFO)
@@ -17,7 +19,7 @@ formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(messa
 logHandler.setFormatter(formatter)
 logger.addHandler(logHandler)
 
-SYMBOLS = ["btcusdt", "ethusdt", "bnbusdt", "solusdt", "xrpusdt"]
+SYMBOLS = [s.strip().lower() for s in os.getenv("WATCHED_SYMBOLS", "btcusdt,ethusdt,bnbusdt,solusdt,xrpusdt,adausdt,dogeusdt,shibusdt,avaxusdt,dotusdt,linkusdt,trxusdt,ltcusdt,bchusdt,uniusdt,xlmusdt,nearusdt,atomusdt,aptusdt").split(",")]
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
@@ -57,8 +59,13 @@ async def heartbeat_publisher(redis_client):
             await asyncio.sleep(2)
 
 
+tick_writer: TickWriter | None = None
+
+
 async def publish_tick(redis_client, symbol: str):
     s = state[symbol]
+    if s["price"] <= 0 or s["bid_price"] <= 0 or s["ask_price"] <= 0:
+        return
     tick: NormalizedTick = {
         "symbol": symbol.upper(),
         "price": s["price"],
@@ -76,6 +83,9 @@ async def publish_tick(redis_client, symbol: str):
     await redis_client.setex(f"tick:last:{symbol.upper()}", 10, tick_json)
     # Publish to Pub/Sub
     await redis_client.publish(f"ticks:{symbol.upper()}", tick_json)
+
+    if tick_writer:
+        await tick_writer.enqueue(tick)
 
 async def binance_websocket_consumer(redis_client):
     streams = []
@@ -118,11 +128,17 @@ async def binance_websocket_consumer(redis_client):
                         await publish_tick(redis_client, symbol)
                         
                     elif "@bookTicker" in stream_name:
-                        state[symbol]["bid_price"] = float(data.get("b", 0))
+                        bid = float(data.get("b", 0))
+                        ask = float(data.get("a", 0))
+                        state[symbol]["bid_price"] = bid
                         state[symbol]["bid_qty"] = float(data.get("B", 0))
-                        state[symbol]["ask_price"] = float(data.get("a", 0))
+                        state[symbol]["ask_price"] = ask
                         state[symbol]["ask_qty"] = float(data.get("A", 0))
                         state[symbol]["timestamp_ms"] = int(time.time() * 1000)
+                        if bid > 0 and ask > 0:
+                            mid = (bid + ask) / 2
+                            if state[symbol]["price"] <= 0:
+                                state[symbol]["price"] = mid
                         await publish_tick(redis_client, symbol)
 
                     elif "@depth20" in stream_name:
@@ -143,14 +159,25 @@ async def binance_websocket_consumer(redis_client):
             backoff = min(max_backoff, backoff * 2)
 
 async def main():
+    global tick_writer
     logger.info(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT}")
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    
+
+    tick_writer = TickWriter()
+    try:
+        await tick_writer.start()
+    except Exception as e:
+        logger.error("TickWriter failed to start — ingestion continues without DB persist", extra={"error": str(e)})
+        tick_writer = None
+
     # Start heartbeat task
     asyncio.create_task(heartbeat_publisher(redis_client))
-    
-    # Start consumer
-    await binance_websocket_consumer(redis_client)
+
+    try:
+        await binance_websocket_consumer(redis_client)
+    finally:
+        if tick_writer:
+            await tick_writer.stop()
 
 if __name__ == "__main__":
     asyncio.run(main())
