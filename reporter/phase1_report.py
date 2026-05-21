@@ -92,8 +92,9 @@ async def fetch_infra(conn, redis_client) -> dict:
     out["risk_received"] = int(await redis_client.get(f"risk:stats:received:{hour_key}") or 0)
     out["risk_approved"] = int(await redis_client.get(f"risk:stats:approved:{hour_key}") or 0)
     out["risk_rejected_low_profit"] = int(await redis_client.get(f"risk:stats:rejected_low_profit:{hour_key}") or 0)
+    out["risk_rejected_low_volatility"] = int(await redis_client.get(f"risk:stats:rejected_low_volatility:{hour_key}") or 0)
     out["risk_rejected_other"] = int(await redis_client.get(f"risk:stats:rejected_other:{hour_key}") or 0)
-    out["risk_rejected"] = out["risk_rejected_low_profit"] + out["risk_rejected_other"]
+    out["risk_rejected"] = out["risk_rejected_low_profit"] + out["risk_rejected_low_volatility"] + out["risk_rejected_other"]
     out["risk_approved_pct"] = (out["risk_approved"] / out["risk_received"] * 100) if out["risk_received"] > 0 else 0.0
 
     # Pending Limit Order Stats (last 24h, keyed by today's date)
@@ -226,6 +227,7 @@ def format_telegram(report: dict, day_label: str) -> str:
         f"Approvati: {infra.get('risk_approved', 0)} ({infra.get('risk_approved_pct', 0):.1f}%)",
         f"Rifiutati: {infra.get('risk_rejected', 0)}",
         f"  → Low profitability: {infra.get('risk_rejected_low_profit', 0)}",
+        f"  → Low volatility: {infra.get('risk_rejected_low_volatility', 0)}",
         f"  → Altri: {infra.get('risk_rejected_other', 0)}",
         f"ATR live: BTC={infra.get('atr_btc', 'N/A')} | ETH={infra.get('atr_eth', 'N/A')}",
         (

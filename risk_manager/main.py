@@ -265,6 +265,23 @@ class RiskManager:
             atr_source,
         )
 
+        # --- Volatility filter: reject if ATR too low ---
+        if atr_bps < p.min_atr_bps:
+            msg = (
+                f"\U0001f6ab Signal REJECTED: {symbol} {direction}\n"
+                f"Reason: Low Volatility\n"
+                f"ATR: {float(atr_bps):.2f} bps < min {float(p.min_atr_bps):.1f} bps\n"
+                f"ATR source: {atr_source}"
+            )
+            logger.warning(msg)
+            await self.redis_client.incr(f"risk:stats:rejected_low_volatility:{hour_key}")
+            await self.redis_client.expire(f"risk:stats:rejected_low_volatility:{hour_key}", 86400)
+            await self.redis_client.publish(
+                "alerts:telegram",
+                json.dumps({"event": "risk_filter", "message": msg}),
+            )
+            return
+
         balance = await self.get_paper_balance(signal.get("ab_variant", "A"))
         risk_amount = balance * p.risk_per_trade_pct
         sl_distance = atr * p.stop_loss_atr_multiplier

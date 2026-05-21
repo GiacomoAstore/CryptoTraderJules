@@ -25,6 +25,7 @@ class RiskParams:
     commission_rate: Decimal = Decimal("0.001")
     min_profit_multiplier_vs_fees: Decimal = Decimal("3.0")
     entry_pullback_bps: Decimal = Decimal("18.0")
+    min_atr_bps: Decimal = Decimal("8.0")
     pending_order_timeout_seconds: int = 300
 
 
@@ -58,6 +59,7 @@ def _apply_yaml_risk(params: RiskParams, risk: dict[str, Any]) -> RiskParams:
         "commission_rate": ("commission_rate", Decimal),
         "min_profit_multiplier_vs_fees": ("min_profit_multiplier_vs_fees", Decimal),
         "entry_pullback_bps": ("entry_pullback_bps", Decimal),
+        "min_atr_bps": ("min_atr_bps", Decimal),
         "pending_order_timeout_seconds": ("pending_order_timeout_seconds", int),
     }
     for yaml_key, (attr, cast) in mapping.items():
@@ -79,6 +81,7 @@ def _apply_redis_risk(params: RiskParams, cfg: dict[str, Any]) -> RiskParams:
         "COMMISSION_RATE": ("commission_rate", Decimal),
         "MIN_PROFIT_MULTIPLIER_VS_FEES": ("min_profit_multiplier_vs_fees", Decimal),
         "ENTRY_PULLBACK_BPS": ("entry_pullback_bps", Decimal),
+        "MIN_ATR_BPS": ("min_atr_bps", Decimal),
         "PENDING_ORDER_TIMEOUT_SECONDS": ("pending_order_timeout_seconds", int),
     }
     for redis_key, (attr, cast) in redis_mapping.items():

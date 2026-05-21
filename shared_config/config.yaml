@@ -125,3 +125,4 @@ risk:
   min_profit_multiplier_vs_fees: 2.0
   commission_rate: 0.00075
   entry_pullback_bps: 13.0
+  min_atr_bps: 8.0
