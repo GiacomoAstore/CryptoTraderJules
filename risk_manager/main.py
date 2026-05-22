@@ -142,7 +142,7 @@ class RiskManager:
         """
         Returns (atr_value, is_real_from_5m_candles).
 
-        If no 5m ATR is cached for this symbol, falls back to 15 bps of price.
+        If no 5m ATR is cached for this symbol, falls back to min_atr_bps.
         Always logs clearly which mode is active.
         """
         if symbol in self.atr_cache:
@@ -150,12 +150,13 @@ class RiskManager:
             return atr, is_real
 
         # Fallback: no 5m data available (cold-start or DB error)
-        fallback_atr = price * Decimal("0.0015")
+        fallback_bps = self.params.min_atr_bps
+        fallback_atr = price * (fallback_bps / Decimal("10000"))
         logger.warning(
-            "⚠️ ATR FALLBACK ACTIVE for %s — using %.2f bps (15 bps floor). "
+            "⚠️ ATR FALLBACK ACTIVE for %s — using %.2f bps (min_atr_bps). "
             "5m cache not populated yet.",
             symbol,
-            15.0,
+            float(fallback_bps),
         )
         return fallback_atr, False
 
@@ -257,7 +258,7 @@ class RiskManager:
         atr, is_real_atr = self._get_atr(symbol, price)
 
         atr_bps = (atr / price) * 10000
-        atr_source = "5m-candle" if is_real_atr else "FALLBACK-15bps"
+        atr_source = "5m-candle" if is_real_atr else f"FALLBACK-{float(p.min_atr_bps)}bps"
         logger.info(
             "ATR for %s: %.2f bps (source: %s)",
             symbol,
