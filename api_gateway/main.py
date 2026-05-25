@@ -309,7 +309,18 @@ async def health_check(request: Request):
 @app.get("/api/symbols")
 async def get_symbols(user: str = Depends(get_current_user)):
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-    symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
+    symbols_env = os.getenv("WATCHED_SYMBOLS", "")
+    if symbols_env.strip():
+        symbols = []
+        seen = set()
+        for s in symbols_env.split(","):
+            sym = s.strip().upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            symbols.append(sym)
+    else:
+        symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT"]
     results = []
     for s in symbols:
         tick_str = await redis_client.get(f"tick:last:{s}")
@@ -378,6 +389,15 @@ async def update_config(config: dict, user: str = Depends(get_current_user)):
     await redis_client.publish("system:commands", "RELOAD_CONFIG")
     await manager.broadcast(json.dumps({"channel": "system:commands", "data": "RELOAD_CONFIG"}))
     return {"status": "ok"}
+
+@app.post("/api/report/send")
+async def send_report(user: str = Depends(get_current_user)):
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    try:
+        published = await redis_client.publish("system:commands", "PHASE1_MORNING_REPORT")
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+    return {"status": "ok", "published": published}
 
 @app.post("/api/bot/start")
 async def start_bot(user: str = Depends(get_current_user)):

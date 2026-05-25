@@ -1,0 +1,6 @@
+subscribe
+executed_trades
+1
+message
+executed_trades
+{"symbol": "DOTUSDT", "side": "SELL", "price": 1.206, "entry_price": 1.211, "exit_price": 1.206, "quantity": 31.098756, "pnl_usdt": 0.08, "pnl_pct": 0.21, "close_reason": "TIMEOUT", "ab_variant": "A", "strategy_name": "Unknown", "open_time_ts": 1779523033.0672255}

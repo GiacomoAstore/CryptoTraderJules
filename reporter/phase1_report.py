@@ -56,6 +56,19 @@ async def fetch_trades(conn) -> list[dict]:
 
 async def fetch_infra(conn, redis_client) -> dict:
     out: dict = {}
+    watched_env = os.getenv("WATCHED_SYMBOLS", "")
+    if watched_env.strip():
+        watched = []
+        seen = set()
+        for s in watched_env.split(","):
+            sym = s.strip().upper()
+            if not sym or sym in seen:
+                continue
+            seen.add(sym)
+            watched.append(sym)
+        out["watched_symbols_count"] = len(watched)
+    else:
+        out["watched_symbols_count"] = 0
     hb = await redis_client.get("ingestion:heartbeat")
     if hb:
         age_ms = int(time.time() * 1000) - int(hb)
@@ -65,7 +78,8 @@ async def fetch_infra(conn, redis_client) -> dict:
         out["ingestion_stale"] = True
 
     out["bot_status"] = await redis_client.get("bot:status") or "unknown"
-    out["safe_mode"] = bool(await redis_client.get("bot:safe_mode"))
+    safe_mode_raw = await redis_client.get("bot:safe_mode")
+    out["safe_mode"] = str(safe_mode_raw).strip().lower() in ("1", "true", "yes", "on") if safe_mode_raw is not None else False
     cb = await redis_client.hgetall("risk:circuit_breaker") or {}
     out["circuit_breaker"] = cb
     out["circuit_open"] = cb.get("status") == "open"
@@ -123,8 +137,8 @@ async def fetch_infra(conn, redis_client) -> dict:
     # ATR from DB (5m candles)
     btc_atr = await fetch_5m_atr_reporter(conn, "BTCUSDT")
     eth_atr = await fetch_5m_atr_reporter(conn, "ETHUSDT")
-    out["atr_btc"] = f"{btc_atr:.2f} bps" if btc_atr else "N/A"
-    out["atr_eth"] = f"{eth_atr:.2f} bps" if eth_atr else "N/A"
+    out["atr_btc"] = f"{btc_atr:.1f} bps" if btc_atr else "N/A"
+    out["atr_eth"] = f"{eth_atr:.1f} bps" if eth_atr else "N/A"
 
     return out
 
@@ -195,63 +209,77 @@ def format_telegram(report: dict, day_label: str) -> str:
     g = report["global"]
     infra = report["infrastructure"]
     gate = report["gate"]
+    date = (report.get("generated_at") or "")[:10]
+
+    def _pf(val) -> float:
+        if val is None:
+            return 999.0
+        try:
+            return float(val)
+        except Exception:
+            return 0.0
+
+    def _strategy_line(label: str, s: dict) -> str:
+        prefix = f"{label}:"
+        if label == "Breakout1m":
+            prefix = f"{prefix} "
+        else:
+            prefix = f"{prefix:<12}"
+        return (
+            f"{prefix}"
+            f"n={s.get('trades', 0)}  WR={s.get('win_rate_pct', 0):.0f}%  "
+            f"PF={_pf(s.get('profit_factor')):.2f}  E={s.get('expectancy_bps', 0):.1f}bps"
+        )
+
+    if infra.get("atr_fallback_active"):
+        fallback_line = f"ATR fallback: ⚠️ {infra.get('atr_fallback_duration_min', 0):.0f} minuti"
+    else:
+        last_min = float(infra.get("atr_last_fallback_min", 0) or 0)
+        fallback_line = f"ATR fallback: ⚠️ {last_min:.0f} minuti" if last_min > 0 else "ATR fallback: ❌ Mai"
+
+    cb_state = "open" if infra.get("circuit_open") else "closed"
     lines = [
-        f"FASE 1 — Giorno {day_label}",
-        f"Data UTC: {report['generated_at'][:10]}",
+        f"📅 FASE 1 — Giorno {day_label} — {date}",
         "",
         "GLOBAL",
-        f"Trades: {g['trades']} | PF: {g.get('profit_factor', 0):.3f} (gate >{GATE_PF_MIN}, n>={GATE_MIN_TRADES})",
-        f"Max DD: {g.get('max_drawdown_pct', 0):.2f}% (gate <{GATE_MAX_DD_PCT}%)",
-        f"Win rate: {g.get('win_rate_pct', 0):.1f}% | E: {g.get('expectancy_bps', 0):.2f} bps",
+        f"Trades: {g.get('trades', 0)} | PF: {_pf(g.get('profit_factor', 0)):.2f} (gate >{GATE_PF_MIN}, n>={GATE_MIN_TRADES})",
+        f"Max DD: {g.get('max_drawdown_pct', 0):.1f}% (gate <{GATE_MAX_DD_PCT:.1f}%)",
+        f"Win rate: {g.get('win_rate_pct', 0):.0f}% | E: {g.get('expectancy_bps', 0):.2f} bps",
         f"PnL: ${g.get('total_pnl_usdt', 0):.2f} | Equity paper: ${infra.get('paper_total_usdt', 0):.2f}",
         "",
         "STRATEGIE",
     ]
     for family in ("EMA", "Momentum", "VWAP"):
-        s = report["by_strategy"].get(family, {})
-        flag = " [OFF]" if s.get("disabled") else ""
-        pf = s.get("profit_factor") or 0
-        lines.append(
-            f"{family}: n={s.get('trades', 0)} WR={s.get('win_rate_pct', 0):.0f}% "
-            f"PF={pf:.3f} E={s.get('expectancy_bps', 0):.1f}bps{flag}"
-        )
+        lines.append(_strategy_line(family, report.get("by_strategy", {}).get(family, {})))
+    lines.append(_strategy_line("Breakout1m", report.get("breakout_1m", {})))
     lines.extend([
         "",
         "INFRA",
-        f"Bot: {infra.get('bot_status')} | CB: {infra.get('circuit_breaker', {}).get('status', '?')}",
-        f"Safe mode: {'ON' if infra.get('safe_mode') else 'off'} | Ingestion stale: {'YES' if infra.get('ingestion_stale') else 'no'}",
-        f"Ticks DB: {infra.get('db_ticks_count', 0):,} | Pos aperte: {infra.get('positions_db_count', 0)}",
+        f"Bot: {infra.get('bot_status')} | CB: {cb_state}",
+        f"Safe mode: {'on' if infra.get('safe_mode') else 'off'} | Ingestion stale: {'yes' if infra.get('ingestion_stale') else 'no'}",
+        f"Ticks DB: {infra.get('db_ticks_count', 0)} | Pos aperte: {infra.get('positions_db_count', 0)}",
         "",
         "⚡ RISK MANAGER (ultima ora)",
         f"Segnali ricevuti: {infra.get('risk_received', 0)}",
-        f"Approvati: {infra.get('risk_approved', 0)} ({infra.get('risk_approved_pct', 0):.1f}%)",
+        f"Approvati: {infra.get('risk_approved', 0)} ({infra.get('risk_approved_pct', 0):.0f}%)",
         f"Rifiutati: {infra.get('risk_rejected', 0)}",
         f"  → Low profitability: {infra.get('risk_rejected_low_profit', 0)}",
         f"  → Low volatility: {infra.get('risk_rejected_low_volatility', 0)}",
         f"  → Altri: {infra.get('risk_rejected_other', 0)}",
         f"ATR live: BTC={infra.get('atr_btc', 'N/A')} | ETH={infra.get('atr_eth', 'N/A')}",
-        (
-            f"⚠️ ATR FALLBACK ATTIVO da {infra.get('atr_fallback_duration_min', 0):.0f} min!"
-            if infra.get("atr_fallback_active")
-            else (
-                f"ATR fallback ultima notte: {infra.get('atr_last_fallback_min', 0):.0f} min"
-                if infra.get("atr_last_fallback_min", 0) > 0
-                else "ATR source: 5m-candle ✅"
-            )
-        ),
+        fallback_line,
         "",
         "📋 ORDINI PENDENTI (ultime 24h)",
         f"Piazzati: {infra.get('pending_placed', 0)}",
-        f"Fillati: {infra.get('pending_filled', 0)}  ({infra.get('pending_fill_rate_pct', 0):.0f}% fill rate)",
+        f"Fillati: {infra.get('pending_filled', 0)} ({infra.get('pending_fill_rate_pct', 0):.0f}% fill rate)",
         f"Cancellati (timeout): {infra.get('pending_cancelled', 0)}",
         f"Scappati senza fill: {infra.get('pending_escaped', 0)}",
         "",
-        "GATE",
-        f"Giorni puliti consecutivi: {gate.get('consecutive_clean_days', 0)} / {REQUIRED_CLEAN_DAYS}",
-        f"Exit ready: {'SI' if gate.get('gate_exit_ready') else 'NO'}",
+        "🎯 GATE",
+        f"Giorni puliti consecutivi: {gate.get('consecutive_clean_days', 0)}/{REQUIRED_CLEAN_DAYS}",
+        f"Exit ready: {'YES' if gate.get('gate_exit_ready') else 'NO'}",
     ])
-    if gate.get("last_reset_reason"):
-        lines.append(f"Ultimo reset: {gate.get('last_reset_reason')}")
+    lines.append(f"Ultimo reset: {gate.get('last_reset_reason') or '-'}")
     return "\n".join(lines)
 
 
@@ -268,6 +296,7 @@ async def build_report(*, update_gate: bool = True) -> dict:
 
         global_stats = compute_stats(trades)
         by_family = group_by_family(trades)
+        breakout_trades = [t for t in trades if (t.get("strategy_name") or "") == "Breakout1m"]
 
         by_strategy_report = {}
         for family in ("EMA", "Momentum", "VWAP", "Consensus", "Other"):
@@ -278,6 +307,9 @@ async def build_report(*, update_gate: bool = True) -> dict:
                 if await redis_client.get(f"phase1:disable:{n}"):
                     d["disabled"] = True
             by_strategy_report[family] = d
+
+        breakout_1m_stats = compute_stats(breakout_trades).to_dict()
+        breakout_1m_stats["disabled"] = bool(await redis_client.get("phase1:disable:Breakout1m"))
 
         strategy_actions = await check_strategy_thresholds(redis_client, by_family)
 
@@ -317,6 +349,7 @@ async def build_report(*, update_gate: bool = True) -> dict:
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "global": global_dict,
             "by_strategy": by_strategy_report,
+            "breakout_1m": breakout_1m_stats,
             "infrastructure": infra,
             "gate": gate_state,
             "strategy_actions": strategy_actions,

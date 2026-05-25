@@ -47,6 +47,9 @@ class OrderCommand:
         self.status = "PENDING"
         self.executed_price = Decimal("0")
         self.peak_price = Decimal("0")
+        self.breakeven_set: bool = False
+        # ATR in basis points passed from RiskManager in approved_orders payload (float bps)
+        self.atr_bps: float | None = data.get("atr_bps")
         
     def to_dict(self):
         return {
@@ -74,6 +77,28 @@ class PaperEngine:
             "A": Decimal("100"),
             "B": Decimal("100")
         }
+        # Simple ATR estimator per symbol (uses recent true ranges)
+        from collections import defaultdict, deque
+
+        self.atr_windows: dict[str, deque[Decimal]] = defaultdict(lambda: deque(maxlen=14))
+        self.atr_by_symbol: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        self.last_price_by_symbol: dict[str, Decimal] = {}
+
+    async def publish_order_event(self, *, status: str, pos_key: str, cmd: OrderCommand, extra: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {
+            "status": status,
+            "pos_key": pos_key,
+            "command_id": cmd.command_id,
+            "symbol": cmd.symbol,
+            "ab_variant": cmd.ab_variant,
+            "side": cmd.direction,
+            "quantity": float(cmd.quantity),
+            "strategy_name": cmd.strategy,
+            "created_at_ts": cmd.created_at,
+        }
+        if extra:
+            payload.update(extra)
+        await self.redis_client.publish("order_events", json.dumps(payload))
 
     async def init_ledger(self):
         balance_a = await self.redis_client.get("paper:balance:A")
@@ -108,6 +133,18 @@ class PaperEngine:
                     # immediately TIMEOUT on restart
                     cmd.created_at = time.time()
                     pos_key = f"{cmd.symbol}_{cmd.ab_variant}"
+                    # load breakeven flag and atr_bps from Redis if present
+                    try:
+                        val = await self.redis_client.get(f"position:breakeven:{pos_key}")
+                        cmd.breakeven_set = bool(int(val)) if val is not None else False
+                    except Exception:
+                        cmd.breakeven_set = False
+                    try:
+                        atv = await self.redis_client.get(f"position:atr_bps:{pos_key}")
+                        if atv is not None:
+                            cmd.atr_bps = float(atv)
+                    except Exception:
+                        pass
                     self.open_positions[pos_key] = cmd
                 logger.info(f"Loaded {len(rows)} open positions from DB.")
         except Exception as e:
@@ -178,11 +215,25 @@ class PaperEngine:
         cmd.status = "FILLED"
         cmd.executed_price = fill_price
         cmd.peak_price = fill_price
+        cmd.breakeven_set = False
 
         await self.save_order_to_db(cmd)
 
+        # Persist atr_bps to Redis for later recovery (if provided)
+        try:
+            if getattr(cmd, "atr_bps", None) is not None:
+                await self.redis_client.set(f"position:atr_bps:{pos_key}", str(cmd.atr_bps))
+        except Exception:
+            pass
+
         del self.pending_orders[pos_key]
         self.open_positions[pos_key] = cmd
+
+        # persist initial breakeven flag (not set)
+        try:
+            await self.redis_client.set(f"position:breakeven:{pos_key}", "0")
+        except Exception:
+            pass
 
         # Track fill stats
         day_key = time.strftime("%Y-%m-%d")
@@ -192,6 +243,16 @@ class PaperEngine:
         logger.info(
             f"LIMIT ORDER FILLED [{cmd.ab_variant}]: {cmd.direction} {cmd.quantity:.4f} {cmd.symbol} "
             f"@ {fill_price:.4f} (limit was {cmd.target_price:.4f})"
+        )
+        await self.publish_order_event(
+            status="FILLED",
+            pos_key=pos_key,
+            cmd=cmd,
+            extra={
+                "fill_price": float(fill_price),
+                "limit_price": float(cmd.target_price),
+                "filled_at_ts": time.time(),
+            },
         )
 
     async def expire_pending_order(self, pos_key: str, cmd: OrderCommand, reason: str):
@@ -210,6 +271,21 @@ class PaperEngine:
             await self.redis_client.expire(f"pending:stats:escaped:{day_key}", 172800)
 
         logger.info(f"LIMIT ORDER {reason} [{cmd.ab_variant}]: {cmd.symbol} | Limit was {cmd.target_price:.4f}")
+        # Pubblica su order_events SOLO gli status richiesti:
+        # - TIMEOUT (scaduto)
+        # - CANCELLED (tutte le altre cancellazioni/annullamenti)
+        status_event = "TIMEOUT" if str(reason).upper() == "TIMEOUT" else "CANCELLED"
+        await self.publish_order_event(
+            # Publish the actual outcome to order_events without touching
+            # executed_trades (kept backward-compatible).
+            status=status_event,
+            pos_key=pos_key,
+            cmd=cmd,
+            extra={
+                "cancel_reason": reason,
+                "limit_price": float(cmd.target_price),
+            },
+        )
 
     async def close_position(self, pos_key: str, close_price: Decimal, reason: str):
         if pos_key not in self.open_positions:
@@ -255,6 +331,14 @@ class PaperEngine:
         }
         
         await self.redis_client.publish("executed_trades", json.dumps(trade_record))
+        # Also publish the same payload on order_events (with status/pos_key)
+        # so stateful consumers can rely on a single stream.
+        await self.publish_order_event(
+            status="FILLED",
+            pos_key=pos_key,
+            cmd=pos,
+            extra=trade_record,
+        )
         del self.open_positions[pos_key]
         logger.info(f"POSITION CLOSED [{pos.ab_variant}]: {pos.symbol} @ {close_price} | PNL: {net_pnl:.2f} ({pnl_pct:.2f}%)")
 
@@ -263,6 +347,20 @@ class PaperEngine:
         symbol = tick["symbol"]
         price = Decimal(str(tick["price"]))
         now = time.time()
+
+        # --- Update simple ATR estimate ---
+        try:
+            last = self.last_price_by_symbol.get(symbol)
+            if last is not None:
+                tr = abs(price - last)
+                self.atr_windows[symbol].append(tr)
+                # mean true range
+                window = self.atr_windows[symbol]
+                if len(window) > 0:
+                    self.atr_by_symbol[symbol] = sum(window) / Decimal(len(window))
+            self.last_price_by_symbol[symbol] = price
+        except Exception:
+            pass
 
         # --- CHECK PENDING LIMIT ORDERS ---
         for variant in ["A", "B"]:
@@ -291,6 +389,58 @@ class PaperEngine:
                 continue
                 
             pos = self.open_positions[pos_key]
+
+            # --- BREAKEVEN STOP LOGIC ---
+            try:
+                if not getattr(pos, "breakeven_set", False):
+                    # Prefer ATR passed in payload (atr_bps) if available
+                    atr_price = Decimal("0")
+                    if getattr(pos, "atr_bps", None) is not None:
+                        try:
+                            atr_price = (pos.executed_price * Decimal(str(pos.atr_bps))) / Decimal("10000")
+                        except Exception:
+                            atr_price = Decimal("0")
+                    else:
+                        atr_price = self.atr_by_symbol.get(symbol, Decimal("0"))
+
+                    # require atr > 0 to avoid spurious triggers
+                    if atr_price > 0:
+                        # BUY: price exceeds entry + 1.0 * ATR
+                        if pos.direction == "BUY" and price >= pos.executed_price + atr_price:
+                            # compute fee round trip bps
+                            COMMISSION_RATE = Decimal(os.getenv("COMMISSION_RATE", "0.001"))
+                            fee_bps = Decimal(os.getenv("FEE_ROUND_TRIP_BPS", str((COMMISSION_RATE * 2 * Decimal('10000')).quantize(Decimal('1')))))
+                            fee_offset = (pos.executed_price * fee_bps) / Decimal("10000")
+                            new_sl = pos.executed_price + fee_offset
+                            if pos.stop_loss is None or new_sl > pos.stop_loss:
+                                pos.stop_loss = new_sl
+                            pos.breakeven_set = True
+                        # SELL: price below entry - 1.0 * ATR
+                        if pos.direction == "SELL" and price <= pos.executed_price - atr_price:
+                            COMMISSION_RATE = Decimal(os.getenv("COMMISSION_RATE", "0.001"))
+                            fee_bps = Decimal(os.getenv("FEE_ROUND_TRIP_BPS", str((COMMISSION_RATE * 2 * Decimal('10000')).quantize(Decimal('1')))))
+                            fee_offset = (pos.executed_price * fee_bps) / Decimal("10000")
+                            new_sl = pos.executed_price - fee_offset
+                            if pos.stop_loss is None or new_sl < pos.stop_loss:
+                                pos.stop_loss = new_sl
+                            pos.breakeven_set = True
+
+                    # if breakeven just set, persist to DB and Redis and log
+                    if getattr(pos, "breakeven_set", False):
+                        try:
+                            await self.redis_client.set(f"position:breakeven:{pos_key}", "1")
+                            await self.redis_client.set(f"position:stop_loss:{pos_key}", str(pos.stop_loss) if pos.stop_loss is not None else "")
+                        except Exception:
+                            pass
+                        try:
+                            async with self.db_pool.acquire() as conn:
+                                await conn.execute("UPDATE positions SET stop_loss = $1 WHERE symbol = $2 AND ab_variant = $3", pos.stop_loss, pos.symbol, pos.ab_variant)
+                        except Exception as e:
+                            logger.error(f"DB Error updating breakeven stop: {e}")
+
+                        logger.info(f"BREAKEVEN STOP SET [{pos.symbol}]: nuovo SL = {pos.stop_loss}")
+            except Exception:
+                logger.exception("Error processing breakeven logic")
 
             if pos.trailing_distance and pos.trailing_distance > 0:
                 if pos.direction == "BUY":

@@ -4,7 +4,7 @@ import DbViewer from './DbViewer';
 import { apiUrl, wsUrl } from './api';
 import './App.css';
 
-const AVAILABLE_SYMBOLS = [
+const DEFAULT_SYMBOLS = [
   'BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT',
   'ADAUSDT', 'DOGEUSDT', 'SHIBUSDT', 'AVAXUSDT', 'DOTUSDT',
   'LINKUSDT', 'TRXUSDT', 'LTCUSDT', 'BCHUSDT',
@@ -14,6 +14,7 @@ const AVAILABLE_SYMBOLS = [
 function App() {
   const [currentTab, setCurrentTab] = useState('dashboard');
   const [activeCharts, setActiveCharts] = useState(['BTCUSDT', 'ETHUSDT', 'SOLUSDT']);
+  const [availableSymbols, setAvailableSymbols] = useState(DEFAULT_SYMBOLS);
   const [isConnected, setIsConnected] = useState(false);
   const [latestTick, setLatestTick] = useState(null);
   const [trades, setTrades] = useState([]);
@@ -31,6 +32,7 @@ function App() {
 
   const [token, setToken] = useState(null);
   const [authError, setAuthError] = useState(null);
+  const [reportStatus, setReportStatus] = useState(null);
 
   const fetchBotStatus = (jwt) => {
     fetch(apiUrl('/api/bot/status'), {
@@ -71,6 +73,20 @@ function App() {
       .catch((err) => console.error("Failed to fetch real portfolio:", err));
   };
 
+  const fetchSymbols = (jwt) => {
+    fetch(apiUrl('/api/symbols'), {
+      headers: { 'Authorization': `Bearer ${jwt}` }
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        const symbols = (data?.symbols || []).map((s) => s.symbol).filter(Boolean);
+        if (symbols.length > 0) {
+          setAvailableSymbols(symbols);
+        }
+      })
+      .catch((err) => console.error("Failed to fetch symbols:", err));
+  };
+
   useEffect(() => {
     const formData = new URLSearchParams();
     formData.append('username', 'admin');
@@ -95,6 +111,7 @@ function App() {
           fetchTrades(loginData.access_token);
           fetchRealPortfolio(loginData.access_token);
           fetchBotStatus(loginData.access_token);
+          fetchSymbols(loginData.access_token);
 
           const ws = new WebSocket(wsUrl(`/ws/live?token=${loginData.access_token}`));
 
@@ -154,6 +171,28 @@ function App() {
     }
   };
 
+  const sendMorningReport = async () => {
+    if (!token) {
+      setReportStatus('Token mancante. Riprova più tardi.');
+      return;
+    }
+    setReportStatus('Richiesta report in corso...');
+    try {
+      const response = await fetch(apiUrl('/api/report/send'), {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || response.statusText);
+      }
+      setReportStatus('Report Telegram richiesto. Controlla il canale.');
+    } catch (err) {
+      console.error('Failed to request morning report', err);
+      setReportStatus(`Errore invio report: ${err.message || err}`);
+    }
+  };
+
   const toggleChart = (symbol) => {
     setActiveCharts(prev => {
       if (prev.includes(symbol)) {
@@ -207,6 +246,19 @@ function App() {
           >
             {botEnabled ? 'BOT RUNNING (PAPER)' : 'BOT PAUSED'}
           </button>
+          <button
+            className="btn-toggle inactive"
+            onClick={sendMorningReport}
+            disabled={!token}
+            style={{ marginLeft: '12px' }}
+          >
+            📩 Invia Report Telegram
+          </button>
+          {reportStatus && (
+            <p style={{ marginTop: '8px', color: 'var(--text-muted)', fontSize: '0.95rem' }}>
+              {reportStatus}
+            </p>
+          )}
         </div>
       </div>
 
@@ -321,7 +373,7 @@ function App() {
         <div className="glass-panel" style={{ width: '250px', maxHeight: '500px', overflowY: 'auto' }}>
           <h3 style={{ marginTop: 0, marginBottom: '12px', fontSize: '1rem' }}>Select Charts (Max 3)</h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {AVAILABLE_SYMBOLS.map(symbol => {
+            {availableSymbols.map(symbol => {
               const isActive = activeCharts.includes(symbol);
               return (
                 <button

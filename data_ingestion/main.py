@@ -19,7 +19,15 @@ formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(messa
 logHandler.setFormatter(formatter)
 logger.addHandler(logHandler)
 
-SYMBOLS = [s.strip().lower() for s in os.getenv("WATCHED_SYMBOLS", "btcusdt,ethusdt,bnbusdt,solusdt,xrpusdt,adausdt,dogeusdt,shibusdt,avaxusdt,dotusdt,linkusdt,trxusdt,ltcusdt,bchusdt,uniusdt,xlmusdt,nearusdt,atomusdt,aptusdt").split(",")]
+_WATCHED_SYMBOLS_RAW = os.getenv(
+    "WATCHED_SYMBOLS",
+    "btcusdt,ethusdt,bnbusdt,solusdt,xrpusdt,adausdt,dogeusdt,shibusdt,avaxusdt,dotusdt,linkusdt,trxusdt,ltcusdt,bchusdt,uniusdt,xlmusdt,nearusdt,atomusdt,aptusdt",
+)
+SYMBOLS = [
+    s.strip().lower()
+    for s in _WATCHED_SYMBOLS_RAW.split(",")
+    if s.strip() and s.strip().lower() != "utkusdt"
+]
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 

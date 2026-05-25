@@ -3,6 +3,10 @@ signal_engine:
   aggregation: momentum_ema_strict
   ema_min_separation_bps: 3
   max_signals_per_hour_per_symbol: 15
+  breakout_lookback: 20
+  breakout_lookback: 3
+  volume_ma_multiplier: 1.0
+  breakout_enabled: true
 
 signal_filters:
   max_spread_bps: 10

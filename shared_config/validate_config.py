@@ -68,6 +68,7 @@ class RiskConfig(BaseModel):
     risk_per_trade_pct: float = Field(default=0.02, gt=0, le=1)
     stop_loss_atr_multiplier: float = Field(default=1.5, gt=0, le=20)
     take_profit_atr_multiplier: float = Field(default=3.0, gt=0, le=50)
+    min_atr_bps: float = Field(default=8.0, gt=0)
     commission_rate: float = Field(default=0.001, ge=0, le=0.1)
     min_profit_multiplier_vs_fees: float = Field(default=3.0, ge=1, le=20)
     entry_pullback_bps: float = Field(default=18.0, ge=0, le=200.0)
@@ -86,6 +87,9 @@ class SignalEngineConfig(BaseModel):
     aggregation: str = Field(default="momentum_ema_strict")
     ema_min_separation_bps: float = Field(default=3, ge=0, le=100)
     max_signals_per_hour_per_symbol: int = Field(default=15, ge=0, le=1000)
+    breakout_enabled: bool = Field(default=True)
+    breakout_lookback: int = Field(default=20, ge=1, le=200)
+    volume_ma_multiplier: float = Field(default=1.0, ge=0, le=100)
 
     @field_validator("aggregation")
     @classmethod

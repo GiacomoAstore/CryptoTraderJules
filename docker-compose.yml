@@ -159,8 +159,8 @@ services:
     build:
       context: ./dashboard
       args:
-        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
-        VITE_WS_URL: ${VITE_WS_URL:-ws://localhost:8000}
+        VITE_API_URL: ${VITE_API_URL:-http://api_gateway:8000}
+        VITE_WS_URL: ${VITE_WS_URL:-ws://api_gateway:8000}
         VITE_ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
     container_name: cryptoscalper_dashboard
     ports:

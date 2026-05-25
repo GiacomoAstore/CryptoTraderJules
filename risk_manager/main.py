@@ -29,9 +29,15 @@ DB_DSN = (
 )
 
 # Symbols actively monitored — used by ATR updater loop
-WATCHED_SYMBOLS = [s.upper().strip() for s in os.getenv(
-    "WATCHED_SYMBOLS", "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,SHIBUSDT,AVAXUSDT,DOTUSDT,LINKUSDT,TRXUSDT,LTCUSDT,BCHUSDT,UNIUSDT,XLMUSDT,NEARUSDT,ATOMUSDT,APTUSDT"
-).split(",")]
+_WATCHED_SYMBOLS_RAW = os.getenv(
+    "WATCHED_SYMBOLS",
+    "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,SHIBUSDT,AVAXUSDT,DOTUSDT,LINKUSDT,TRXUSDT,LTCUSDT,BCHUSDT,UNIUSDT,XLMUSDT,NEARUSDT,ATOMUSDT,APTUSDT",
+)
+WATCHED_SYMBOLS = [
+    s.upper().strip()
+    for s in _WATCHED_SYMBOLS_RAW.split(",")
+    if s.strip() and s.upper().strip() != "UTKUSDT"
+]
 
 # ATR update interval in seconds
 ATR_UPDATE_INTERVAL_SEC = int(os.getenv("ATR_UPDATE_INTERVAL_SEC", "60"))
@@ -100,6 +106,7 @@ class RiskManager:
     def __init__(self, redis_client):
         self.redis_client = redis_client
         self.open_positions: Dict[str, dict] = {}
+        self.pending_orders: Dict[str, dict] = {}
         self.params = RiskParams()
         # ATR cache: symbol -> (atr_value: Decimal, is_real: bool)
         self.atr_cache: Dict[str, tuple[Decimal, bool]] = {}
@@ -248,8 +255,14 @@ class RiskManager:
         direction = signal["type"]
 
         pos_key = f"{symbol}_{signal.get('ab_variant', 'A')}"
-        if len(self.open_positions) >= p.max_open_positions and pos_key not in self.open_positions:
+        total_tracked = len(self.open_positions) + len(self.pending_orders)
+        if total_tracked >= p.max_open_positions and pos_key not in self.open_positions and pos_key not in self.pending_orders:
             logger.warning(f"Signal rejected: Max open positions reached ({p.max_open_positions})")
+            await self.redis_client.incr(f"risk:stats:rejected_other:{hour_key}")
+            await self.redis_client.expire(f"risk:stats:rejected_other:{hour_key}", 86400)
+            return
+        if pos_key in self.open_positions or pos_key in self.pending_orders:
+            logger.warning(f"Signal rejected: Already tracked position/order for {pos_key}")
             await self.redis_client.incr(f"risk:stats:rejected_other:{hour_key}")
             await self.redis_client.expire(f"risk:stats:rejected_other:{hour_key}", 86400)
             return
@@ -356,7 +369,7 @@ class RiskManager:
             "pending_order_timeout_seconds": p.pending_order_timeout_seconds,
         }
 
-        self.open_positions[pos_key] = command
+        self.pending_orders[pos_key] = command
         logger.info(
             f"Signal APPROVED [{command['ab_variant']}]: {command['type']} {command['symbol']} "
             f"Qty: {qty:.4f} | Signal@{price} → Limit@{limit_price:.4f} (-{float(p.entry_pullback_bps):.1f}bps) "
@@ -367,11 +380,52 @@ class RiskManager:
         await self.redis_client.publish(f"approved_orders:{symbol}", json.dumps(command))
         await self.redis_client.publish("approved_orders", json.dumps(command))
 
+    async def handle_order_event(self, event: dict) -> None:
+        status = str(event.get("status") or "").upper()
+        pos_key = str(event.get("pos_key") or "")
+        if not pos_key:
+            sym = event.get("symbol")
+            var = event.get("ab_variant", "A")
+            if sym:
+                pos_key = f"{sym}_{var}"
+        if not pos_key:
+            return
+
+        # "FILLED" can mean either:
+        #  - entry fill (coming from order placement)
+        #  - position close execution (same payload as executed_trades, mirrored on order_events)
+        # Disambiguate by the presence of PnL / close-related fields.
+        if status == "FILLED" and (
+            "pnl_usdt" in event or "pnl_pct" in event or "close_reason" in event
+        ):
+            await self.handle_trade_execution(event)
+            return
+
+        if status == "FILLED":
+            cmd = self.pending_orders.pop(pos_key, None)
+            if cmd is None:
+                cmd = {
+                    "symbol": event.get("symbol"),
+                    "ab_variant": event.get("ab_variant", "A"),
+                    "strategy": event.get("strategy_name"),
+                }
+            cmd["filled_at_ts"] = float(event.get("filled_at_ts") or time.time())
+            if "fill_price" in event:
+                cmd["fill_price"] = event.get("fill_price")
+            self.open_positions[pos_key] = cmd
+            return
+
+        if status in {"CANCELLED", "TIMEOUT"}:
+            self.pending_orders.pop(pos_key, None)
+            return
+
     async def handle_trade_execution(self, trade: dict):
         symbol = trade.get("symbol", "UNKNOWN")
         pos_key = f"{symbol}_{trade.get('ab_variant', 'A')}"
         if pos_key in self.open_positions:
             del self.open_positions[pos_key]
+        if pos_key in self.pending_orders:
+            del self.pending_orders[pos_key]
 
         pnl = Decimal(str(trade.get("pnl_usdt", 0)))
         new_pnl, new_losses = await self.update_daily_metrics(pnl, pnl < 0)
@@ -547,7 +601,7 @@ async def main():
     pubsub = redis_client.pubsub()
 
     # No longer subscribing to ticks:* — ATR is computed on 5m candles from DB
-    await pubsub.psubscribe("signals:*", "executed_trades", "system:commands")
+    await pubsub.psubscribe("signals:*", "order_events", "system:commands")
 
     rm = RiskManager(redis_client)
     await rm.reload_params()
@@ -578,8 +632,8 @@ async def main():
                         logger.warning("Signal rejected: Bot is in SAFE MODE due to stale data.")
                         continue
                     await rm.process_signal(data)
-                elif channel == "executed_trades":
-                    await rm.handle_trade_execution(data)
+                elif channel == "order_events":
+                    await rm.handle_order_event(data)
             except Exception as e:
                 logger.error(f"Error processing message from {channel}: {e}")
 

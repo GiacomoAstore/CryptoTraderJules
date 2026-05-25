@@ -8,8 +8,10 @@ import yaml
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from decimal import Decimal, getcontext
+from typing import Any
 import redis.asyncio as redis
 import strategy
+from breakout_1m import Breakout1mEngine
 from market_filters import FilterParams, build_snapshot, passes_market_filters
 from regime_filter import EmaTrendRegime
 
@@ -71,6 +73,13 @@ class SignalEngine:
         self.filter_params = FilterParams()
         self.ema_min_separation_bps = Decimal("3")
         self.max_signals_per_hour_per_symbol = 15
+        self.breakout_config: dict[str, Any] = {
+            "breakout_lookback": 20,
+            "volume_ma_multiplier": 1.0,
+            "breakout_buffer_bps": 0,
+            "breakout_enabled": True,
+        }
+        self.breakout_engine: Breakout1mEngine | None = None
         self.setup_strategies()
 
     def setup_strategies(self):
@@ -96,6 +105,18 @@ class SignalEngine:
                     )
                     self.max_signals_per_hour_per_symbol = int(
                         se.get("max_signals_per_hour_per_symbol", 15)
+                    )
+                    self.breakout_config["breakout_lookback"] = int(
+                        se.get("breakout_lookback", self.breakout_config["breakout_lookback"])
+                    )
+                    self.breakout_config["volume_ma_multiplier"] = float(
+                        se.get("volume_ma_multiplier", self.breakout_config["volume_ma_multiplier"])
+                    )
+                    self.breakout_config["breakout_buffer_bps"] = float(
+                        se.get("breakout_buffer_bps", self.breakout_config["breakout_buffer_bps"])
+                    )
+                    self.breakout_config["breakout_enabled"] = bool(
+                        se.get("breakout_enabled", self.breakout_config["breakout_enabled"])
                     )
 
                 if cfg and "signal_filters" in cfg:
@@ -200,6 +221,29 @@ class SignalEngine:
             self.ema_min_separation_bps,
             self.max_signals_per_hour_per_symbol,
         )
+        self._ensure_breakout_engine()
+
+    def _ensure_breakout_engine(self):
+        if self.breakout_engine is None:
+            self.breakout_engine = Breakout1mEngine(self.redis_client, self.breakout_config)
+        else:
+            self.breakout_engine.config = self.breakout_config
+            self.breakout_engine.breakout_lookback = int(
+                self.breakout_config.get("breakout_lookback", 20)
+            )
+            self.breakout_engine.volume_ma_multiplier = Decimal(
+                str(self.breakout_config.get("volume_ma_multiplier", 1.0))
+            )
+            self.breakout_engine.breakout_buffer_bps = Decimal(
+                str(self.breakout_config.get("breakout_buffer_bps", 0))
+            )
+            self.breakout_engine.enabled = bool(
+                self.breakout_config.get("breakout_enabled", True)
+            )
+            for symbol, history in list(self.breakout_engine.candle_history.items()):
+                self.breakout_engine.candle_history[symbol] = deque(
+                    history, maxlen=self.breakout_engine.breakout_lookback
+                )
 
     def _hourly_cap_ok(self, symbol: str, ts_ms: int) -> bool:
         cap = self.max_signals_per_hour_per_symbol
@@ -214,6 +258,8 @@ class SignalEngine:
         self.hour_signal_count[symbol][_hour_bucket(ts_ms)] += 1
 
     async def run(self):
+        if self.breakout_engine:
+            await self.breakout_engine.initialize()
         pubsub = self.redis_client.pubsub()
         await pubsub.psubscribe("ticks:*", "system:commands")
         logger.info("Signal Engine started. Waiting for ticks...")
@@ -264,6 +310,8 @@ class SignalEngine:
                 if current_time_ms - self.last_signal_time[symbol] < MIN_SIGNAL_INTERVAL_MS:
                     continue
 
+                if self.breakout_engine:
+                    await self.breakout_engine.process_tick(tick)
                 self.price_history[symbol].append(tick["price"])
                 self.tick_history[symbol].append(tick)
 
