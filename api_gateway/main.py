@@ -250,6 +250,29 @@ async def get_metrics():
 
     return {"status": "ok", "metrics": metrics}
 
+from pydantic import BaseModel
+import jwt
+from datetime import datetime, timedelta, timezone
+
+class LoginRequest(BaseModel):
+    password: str
+
+from fastapi.responses import JSONResponse
+
+@app.post("/api/auth/login")
+async def login(request: LoginRequest):
+    expected_password = os.getenv("DASHBOARD_PASSWORD", "admin")
+    if request.password != expected_password:
+        return JSONResponse(status_code=401, content={"status": "error", "message": "Invalid password"})
+
+    secret = os.getenv("JWT_SECRET", "super_secret_jwt_key")
+    payload = {
+        "sub": "admin",
+        "exp": datetime.now(timezone.utc) + timedelta(hours=24)
+    }
+    token = jwt.encode(payload, secret, algorithm="HS256")
+    return {"status": "ok", "token": token}
+
 @app.post("/api/kill-switch")
 async def trigger_kill_switch():
     try:
@@ -261,8 +284,24 @@ async def trigger_kill_switch():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+from fastapi import Query, status
+
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: str = Query(None)):
+    if not token:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
+    secret = os.getenv("JWT_SECRET", "super_secret_jwt_key")
+    try:
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
+        if payload.get("sub") != "admin":
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+    except jwt.PyJWTError:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     await manager.connect(websocket)
     try:
         while True:

@@ -11,8 +11,36 @@ function App() {
     live_daily_pnl: 0.0, live_win_rate: 0.0, live_total_trades: 0
   });
   const [symbol] = useState('btcusdt');
+  const [token, setToken] = useState(localStorage.getItem('jwt_token') || null);
+  const [showLogin, setShowLogin] = useState(!localStorage.getItem('jwt_token'));
+  const [password, setPassword] = useState('');
+  const [loginError, setLoginError] = useState('');
+
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      const res = await fetch('http://localhost:8000/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password })
+      });
+      const data = await res.json();
+      if (res.ok && data.token) {
+        localStorage.setItem('jwt_token', data.token);
+        setToken(data.token);
+        setShowLogin(false);
+        setLoginError('');
+      } else {
+        setLoginError(data.message || 'Login failed');
+      }
+    } catch {
+      setLoginError('Failed to connect to server');
+    }
+  };
 
   useEffect(() => {
+    if (!token) return;
+
     // Initial fetch of trades via REST API
     fetch('http://localhost:8000/api/trades')
       .then((res) => res.json())
@@ -34,7 +62,7 @@ function App() {
       .catch((err) => console.error("Failed to fetch initial metrics:", err));
 
     // Connect to WebSocket
-    const ws = new WebSocket('ws://localhost:8000/ws');
+    const ws = new WebSocket(`ws://localhost:8000/ws?token=${token}`);
 
     ws.onopen = () => {
       setIsConnected(true);
@@ -65,15 +93,21 @@ function App() {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       setIsConnected(false);
-      console.log('Disconnected from API Gateway WebSocket');
+      console.log('Disconnected from API Gateway WebSocket', event.code);
+      if (event.code === 1008) {
+          console.warn("WebSocket closed due to policy violation (likely invalid token).");
+          localStorage.removeItem('jwt_token');
+          setToken(null);
+          setShowLogin(true);
+      }
     };
 
     return () => {
       ws.close();
     };
-  }, []);
+  }, [token]);
 
   const handleKillSwitch = () => {
     if (window.confirm("ARE YOU SURE? This will halt all new trades globally!")) {
@@ -83,6 +117,30 @@ function App() {
         .catch(() => alert("Failed to trigger Kill Switch!"));
     }
   };
+
+  if (showLogin) {
+    return (
+      <div style={{ maxWidth: '400px', margin: '100px auto', padding: '20px', backgroundColor: '#222', borderRadius: '8px', textAlign: 'center' }}>
+        <h2>Login to Dashboard</h2>
+        <form onSubmit={handleLogin}>
+          <div style={{ marginBottom: '15px' }}>
+            <input
+              type="password"
+              placeholder="Dashboard Password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              style={{ width: '100%', padding: '10px', borderRadius: '4px', border: '1px solid #444', backgroundColor: '#333', color: '#fff' }}
+              required
+            />
+          </div>
+          {loginError && <div style={{ color: '#ff5252', marginBottom: '15px' }}>{loginError}</div>}
+          <button type="submit" style={{ width: '100%', padding: '10px', backgroundColor: '#00e676', color: '#000', border: 'none', borderRadius: '4px', fontWeight: 'bold', cursor: 'pointer' }}>
+            Login
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div style={{ maxWidth: '1200px', margin: '0 auto', padding: '20px' }}>
