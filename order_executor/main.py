@@ -118,6 +118,47 @@ async def evaluate_open_positions(tick: dict, redis_client):
     await _evaluate_pool(symbol, current_price, open_positions, redis_client, is_shadow=False)
     await _evaluate_pool(symbol, current_price, shadow_open_positions, redis_client, is_shadow=True)
 
+async def _close_position(pos: dict, current_price: float, reason: str, symbol: str, redis_client, is_shadow: bool):
+    side = pos["side"]
+    logger.info(f"Closing position {pos['id']} due to {reason} at {current_price}")
+
+    entry_value = pos["entry_price"] * pos["qty"]
+    exit_value = current_price * pos["qty"]
+
+    gross_pnl = (exit_value - entry_value) if side == "BUY" else (entry_value - exit_value)
+    commissions = (entry_value * COMMISSION_RATE) + (exit_value * COMMISSION_RATE)
+    net_pnl = gross_pnl - commissions
+
+    result = {
+        "status": "FILLED",
+        "order": {
+            "symbol": symbol,
+            "type": "SELL" if side == "BUY" else "BUY",
+            "price": current_price,
+            "quantity": pos["qty"],
+            "strategy": pos["strategy"]
+        },
+        "close_reason": reason,
+        "gross_pnl": gross_pnl,
+        "commission_paid": commissions,
+        "pnl_netto": net_pnl
+    }
+
+    # Only update the global virtual balance if it's NOT a shadow trade
+    if not is_shadow:
+        try:
+            balance_raw = await redis_client.get("paper:balance")
+            current_balance = float(balance_raw) if balance_raw else 10000.0 # Start with $10k default
+            new_balance = current_balance + net_pnl
+            await redis_client.set("paper:balance", new_balance)
+
+            # Broadcast updated balance
+            await redis_client.publish("paper:balance_updates", json.dumps({"balance": new_balance, "timestamp": int(time.time() * 1000)}))
+        except Exception as e:
+            logger.error(f"Failed to update paper balance: {e}")
+
+    await redis_client.publish("executed_trades", json.dumps(result))
+
 async def _evaluate_pool(symbol: str, current_price: float, pool: dict, redis_client, is_shadow: bool):
     if symbol not in pool or not pool[symbol]:
         return
@@ -134,44 +175,7 @@ async def _evaluate_pool(symbol: str, current_price: float, pool: dict, redis_cl
 
         if hit_sl or hit_tp or timeout:
             reason = "SL_HIT" if hit_sl else "TP_HIT" if hit_tp else "TIMEOUT"
-            logger.info(f"Closing position {pos['id']} due to {reason} at {current_price}")
-
-            entry_value = pos["entry_price"] * pos["qty"]
-            exit_value = current_price * pos["qty"]
-
-            gross_pnl = (exit_value - entry_value) if side == "BUY" else (entry_value - exit_value)
-            commissions = (entry_value * COMMISSION_RATE) + (exit_value * COMMISSION_RATE)
-            net_pnl = gross_pnl - commissions
-
-            result = {
-                "status": "FILLED",
-                "order": {
-                    "symbol": symbol,
-                    "type": "SELL" if side == "BUY" else "BUY",
-                    "price": current_price,
-                    "quantity": pos["qty"],
-                    "strategy": pos["strategy"]
-                },
-                "close_reason": reason,
-                "gross_pnl": gross_pnl,
-                "commission_paid": commissions,
-                "pnl_netto": net_pnl
-            }
-
-            # Only update the global virtual balance if it's NOT a shadow trade
-            if not is_shadow:
-                try:
-                    balance_raw = await redis_client.get("paper:balance")
-                    current_balance = float(balance_raw) if balance_raw else 10000.0 # Start with $10k default
-                    new_balance = current_balance + net_pnl
-                    await redis_client.set("paper:balance", new_balance)
-
-                    # Broadcast updated balance
-                    await redis_client.publish("paper:balance_updates", json.dumps({"balance": new_balance, "timestamp": int(time.time() * 1000)}))
-                except Exception as e:
-                    logger.error(f"Failed to update paper balance: {e}")
-
-            await redis_client.publish("executed_trades", json.dumps(result))
+            await _close_position(pos, current_price, reason, symbol, redis_client, is_shadow)
         else:
             remaining_positions.append(pos)
 
