@@ -77,10 +77,24 @@ function App() {
 
   const handleKillSwitch = () => {
     if (window.confirm("ARE YOU SURE? This will halt all new trades globally!")) {
-      fetch('http://localhost:8000/api/kill-switch', { method: 'POST' })
-        .then(res => res.json())
-        .then(data => alert(data.message))
-        .catch(() => alert("Failed to trigger Kill Switch!"));
+      const token = window.prompt("Enter Kill Switch Token:");
+      if (!token) return;
+
+      fetch('http://localhost:8000/api/kill-switch', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      })
+        .then(async res => {
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.detail || `HTTP error! status: ${res.status}`);
+          }
+          return res.json();
+        })
+        .then(data => alert(data.message || "Kill switch activated"))
+        .catch(err => alert(`Failed to trigger Kill Switch! Error: ${err.message}`));
     }
   };
 

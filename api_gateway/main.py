@@ -1,5 +1,6 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import asyncio
 import json
 import os
@@ -250,8 +251,20 @@ async def get_metrics():
 
     return {"status": "ok", "metrics": metrics}
 
+security = HTTPBearer()
+
+def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    expected_token = os.getenv("JWT_SECRET", "super_secret_jwt_key")
+    if credentials.credentials != expected_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
+
 @app.post("/api/kill-switch")
-async def trigger_kill_switch():
+async def trigger_kill_switch(token: str = Depends(verify_token)):
     try:
         redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
         await redis_client.publish("system_commands", json.dumps({"action": "KILL_SWITCH"}))
