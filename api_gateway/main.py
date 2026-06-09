@@ -1,4 +1,5 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status, Security
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import json
@@ -22,6 +23,18 @@ app.add_middleware(
 
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+def get_api_key(api_key: str = Security(api_key_header)):
+    expected_api_key = os.getenv("API_KEY", "dev_secret_key")
+    if api_key == expected_api_key:
+        return api_key
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid or missing API Key",
+    )
 
 class ConnectionManager:
     def __init__(self):
@@ -178,17 +191,17 @@ def read_root():
     return {"status": "ok", "service": "CryptoScalper API Gateway"}
 
 @app.get("/api/trades")
-async def get_trades(limit: int = 50):
+async def get_trades(limit: int = 50, api_key: str = Depends(get_api_key)):
     trades = await trade_repo.get_recent_trades(limit=limit)
     return {"status": "ok", "trades": trades}
 
 @app.get("/api/trades/{symbol}")
-async def get_trades_by_symbol(symbol: str, limit: int = 50):
+async def get_trades_by_symbol(symbol: str, limit: int = 50, api_key: str = Depends(get_api_key)):
     trades = await trade_repo.get_trades_by_symbol(symbol=symbol.upper(), limit=limit)
     return {"status": "ok", "trades": trades}
 
 @app.get("/api/metrics")
-async def get_metrics():
+async def get_metrics(api_key: str = Depends(get_api_key)):
     # Fetch paper balance from Redis
     try:
         redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
@@ -251,7 +264,7 @@ async def get_metrics():
     return {"status": "ok", "metrics": metrics}
 
 @app.post("/api/kill-switch")
-async def trigger_kill_switch():
+async def trigger_kill_switch(api_key: str = Depends(get_api_key)):
     try:
         redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
         await redis_client.publish("system_commands", json.dumps({"action": "KILL_SWITCH"}))
