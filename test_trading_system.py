@@ -1,3 +1,6 @@
+import pytest
+pytestmark = pytest.mark.asyncio
+
 import asyncio
 import json
 import redis.asyncio as redis

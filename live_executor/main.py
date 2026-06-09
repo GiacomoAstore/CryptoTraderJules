@@ -135,9 +135,9 @@ class LiveTradeCommand(Command):
 
         # Exponential backoff retry logic for Binance API
         max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession() as session:
+            for attempt in range(max_retries):
+                try:
                     async with session.post(url, headers=headers) as response:
                         data = await response.json()
                         if response.status == 200:
@@ -224,9 +224,9 @@ class LiveTradeCommand(Command):
                                 continue
                             else:
                                 break
-            except Exception as e:
-                logger.error(f"Network error during live trade (Attempt {attempt+1}): {e}")
-                await asyncio.sleep((2 ** attempt))
+                except Exception as e:
+                    logger.error(f"Network error during live trade (Attempt {attempt+1}): {e}")
+                    await asyncio.sleep((2 ** attempt))
 
         logger.error("Live trade execution failed after retries.")
 
