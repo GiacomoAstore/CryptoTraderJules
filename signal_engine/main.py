@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+from collections import deque
 import redis.asyncio as redis
 from strategy import EMAStrategy, OrderBookImbalanceStrategy, MomentumBurstStrategy
 from models import NormalizedTick, MarketContext
@@ -47,10 +48,8 @@ async def main():
             # Update market context history if it's a trade tick
             if tick.type == "trade" and tick.price:
                 if tick.symbol not in context.price_history:
-                    context.price_history[tick.symbol] = []
+                    context.price_history[tick.symbol] = deque(maxlen=20)
                 context.price_history[tick.symbol].append(tick.price)
-                if len(context.price_history[tick.symbol]) > 20:
-                    context.price_history[tick.symbol].pop(0)
 
             # Process all strategies
             for strategy in strategies:

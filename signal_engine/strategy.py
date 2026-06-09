@@ -24,7 +24,7 @@ class EMAStrategy(BaseStrategy):
             return None
 
         # Simple SMA for scaffold demonstration
-        avg = sum(history[-20:]) / 20
+        avg = sum(history) / 20
         if tick.price > avg * 1.01:
             return Signal(tick.symbol, "BUY", 0.8, self.name, int(time.time()*1000), tick.price, 0.01, self.is_shadow)
         elif tick.price < avg * 0.99:

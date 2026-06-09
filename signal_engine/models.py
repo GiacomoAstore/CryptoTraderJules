@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Deque
 
 @dataclass
 class NormalizedTick:
@@ -18,7 +18,7 @@ class NormalizedTick:
 
 @dataclass
 class MarketContext:
-    price_history: Dict[str, List[float]]
+    price_history: Dict[str, Deque[float]]
     # Order book snapshots could be added here in the future
 
 @dataclass
