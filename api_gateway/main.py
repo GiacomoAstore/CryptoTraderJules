@@ -54,72 +54,30 @@ scheduler = AsyncIOScheduler()
 
 async def compute_daily_performance():
     print("Computing daily performance...")
-    if not trade_repo.pool:
-        print("DB pool not available for daily performance computation.")
-        return
-
     try:
-        async with trade_repo.pool.acquire() as conn:
-            # Aggregate today's trades
-            rows = await conn.fetch('''
-                SELECT
-                    COUNT(*) as total_trades,
-                    SUM(pnl_netto) as total_pnl,
-                    COUNT(CASE WHEN pnl_netto > 0 THEN 1 END) as winning_trades
-                FROM trades
-                WHERE time::date = CURRENT_DATE AND pnl_netto IS NOT NULL
-            ''')
+        stats = await trade_repo.get_daily_performance_stats()
+        if not stats or stats.get('total_trades', 0) == 0:
+            print("No trades today to compute performance.")
+            return
 
-            if not rows or rows[0]['total_trades'] == 0:
-                print("No trades today to compute performance.")
-                return
+        today = date.today()
+        await trade_repo.save_daily_performance(today, stats)
 
-            stats = rows[0]
-            total_trades = stats['total_trades']
-            total_pnl = stats['total_pnl'] or 0.0
-            winning_trades = stats['winning_trades']
+        total_trades = stats['total_trades']
+        total_pnl = stats['total_pnl']
+        win_rate = stats['win_rate']
+        max_drawdown = stats['max_drawdown']
+        sharpe_ratio = stats['sharpe_ratio']
 
-            win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0.0
+        # Send alert
+        msg = f"Daily Report ({today}):\nTrades: {total_trades}\nPnL: {total_pnl:.2f}\nWin Rate: {win_rate:.1f}%\nMax Drawdown: {max_drawdown:.2f}\nSharpe: {sharpe_ratio:.2f}"
 
-            # Very basic max drawdown calculation (for simplicity, using worst single trade loss)
-            # In a real scenario, this would compute the max peak-to-trough drop over a cumulative series.
-            md_row = await conn.fetch('''
-                SELECT MIN(pnl_netto) as max_loss FROM trades WHERE time::date = CURRENT_DATE AND pnl_netto IS NOT NULL
-            ''')
-            max_drawdown = md_row[0]['max_loss'] if md_row and md_row[0]['max_loss'] is not None and md_row[0]['max_loss'] < 0 else 0.0
+        # publish to Redis so the listener can pick it up
+        redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
+        await redis_client.publish("alerts", json.dumps({"message": msg}))
+        await redis_client.aclose()
 
-            # Simple Sharpe ratio approximation: mean(PnL) / std(PnL)
-            sharpe_row = await conn.fetch('''
-                SELECT AVG(pnl_netto) as mean_pnl, STDDEV(pnl_netto) as std_pnl
-                FROM trades WHERE time::date = CURRENT_DATE AND pnl_netto IS NOT NULL
-            ''')
-
-            mean_pnl = sharpe_row[0]['mean_pnl'] or 0.0
-            std_pnl = sharpe_row[0]['std_pnl'] or 1.0 # avoid div by zero
-            sharpe_ratio = mean_pnl / std_pnl if std_pnl > 0 else 0.0
-
-            # Insert or update daily_performance
-            today = date.today()
-            await conn.execute('''
-                INSERT INTO daily_performance (date, total_pnl, win_rate, sharpe_ratio, max_drawdown, total_trades)
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (date) DO UPDATE SET
-                    total_pnl = EXCLUDED.total_pnl,
-                    win_rate = EXCLUDED.win_rate,
-                    sharpe_ratio = EXCLUDED.sharpe_ratio,
-                    max_drawdown = EXCLUDED.max_drawdown,
-                    total_trades = EXCLUDED.total_trades
-            ''', today, total_pnl, win_rate, sharpe_ratio, max_drawdown, total_trades)
-
-            # Send alert
-            msg = f"Daily Report ({today}):\nTrades: {total_trades}\nPnL: {total_pnl:.2f}\nWin Rate: {win_rate:.1f}%\nMax Drawdown: {max_drawdown:.2f}\nSharpe: {sharpe_ratio:.2f}"
-
-            # publish to Redis so the listener can pick it up
-            redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT)
-            await redis_client.publish("alerts", json.dumps({"message": msg}))
-            await redis_client.aclose()
-
-            print(f"Daily performance updated: {msg}")
+        print(f"Daily performance updated: {msg}")
     except Exception as e:
         print(f"Failed to compute daily performance: {e}")
 

@@ -1,3 +1,4 @@
+import pytest
 import asyncio
 import json
 import redis.asyncio as redis
@@ -7,6 +8,7 @@ import time
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
 
+@pytest.mark.asyncio
 async def test_system():
     print(f"Connecting to Redis at {REDIS_HOST}:{REDIS_PORT} for testing...")
     try:

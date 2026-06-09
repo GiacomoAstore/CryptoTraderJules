@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import asyncpg
 import os
+import datetime
 
 class TradeRepository(ABC):
     @abstractmethod
@@ -14,6 +15,14 @@ class TradeRepository(ABC):
 
     @abstractmethod
     async def insert_trade(self, trade_data: Dict[str, Any]):
+        pass
+
+    @abstractmethod
+    async def get_daily_performance_stats(self) -> Optional[Dict[str, Any]]:
+        pass
+
+    @abstractmethod
+    async def save_daily_performance(self, date_val: datetime.date, stats: Dict[str, Any]):
         pass
 
 class TimescaleTradeRepository(TradeRepository):
@@ -68,3 +77,58 @@ class TimescaleTradeRepository(TradeRepository):
                 float(trade_data.get("commission_paid", 0.0)) if "commission_paid" in trade_data else None,
                 trade_data.get("close_reason")
             )
+
+    async def get_daily_performance_stats(self) -> Optional[Dict[str, Any]]:
+        if not self.pool:
+            return None
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow('''
+                SELECT
+                    COUNT(*) as total_trades,
+                    SUM(pnl_netto) as total_pnl,
+                    COUNT(CASE WHEN pnl_netto > 0 THEN 1 END) as winning_trades,
+                    MIN(pnl_netto) as max_loss,
+                    AVG(pnl_netto) as mean_pnl,
+                    STDDEV(pnl_netto) as std_pnl
+                FROM trades
+                WHERE time::date = CURRENT_DATE AND pnl_netto IS NOT NULL
+            ''')
+
+            if not row or row['total_trades'] == 0:
+                return {'total_trades': 0}
+
+            total_trades = row['total_trades']
+            total_pnl = row['total_pnl'] or 0.0
+            winning_trades = row['winning_trades']
+
+            win_rate = (winning_trades / total_trades) * 100 if total_trades > 0 else 0.0
+            max_drawdown = row['max_loss'] if row['max_loss'] is not None and row['max_loss'] < 0 else 0.0
+
+            mean_pnl = row['mean_pnl'] or 0.0
+            std_pnl = row['std_pnl'] or 1.0 # avoid div by zero
+            sharpe_ratio = mean_pnl / std_pnl if std_pnl > 0 else 0.0
+
+            return {
+                'total_trades': total_trades,
+                'total_pnl': total_pnl,
+                'win_rate': win_rate,
+                'max_drawdown': max_drawdown,
+                'sharpe_ratio': sharpe_ratio
+            }
+
+    async def save_daily_performance(self, date_val: datetime.date, stats: Dict[str, Any]):
+        if not self.pool or stats.get('total_trades', 0) == 0:
+            return
+
+        async with self.pool.acquire() as conn:
+            await conn.execute('''
+                INSERT INTO daily_performance (date, total_pnl, win_rate, sharpe_ratio, max_drawdown, total_trades)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (date) DO UPDATE SET
+                    total_pnl = EXCLUDED.total_pnl,
+                    win_rate = EXCLUDED.win_rate,
+                    sharpe_ratio = EXCLUDED.sharpe_ratio,
+                    max_drawdown = EXCLUDED.max_drawdown,
+                    total_trades = EXCLUDED.total_trades
+            ''', date_val, stats['total_pnl'], stats['win_rate'], stats['sharpe_ratio'], stats['max_drawdown'], stats['total_trades'])
