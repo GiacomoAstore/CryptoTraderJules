@@ -16,7 +16,9 @@ services:
     restart: unless-stopped
 
   live_executor:
-    build: ./live_executor
+    build:
+      context: .
+      dockerfile: ./live_executor/Dockerfile
     container_name: cryptoscalper_live_executor
     env_file:
       - path: .env
@@ -60,7 +62,9 @@ services:
     restart: unless-stopped
 
   order_executor:
-    build: ./order_executor
+    build:
+      context: .
+      dockerfile: ./order_executor/Dockerfile
     container_name: cryptoscalper_order_executor
     env_file:
       - path: .env
