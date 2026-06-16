@@ -12,7 +12,6 @@ import aiohttp
 import redis.asyncio as redis
 from abc import ABC, abstractmethod
 
-import math
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("LiveOrderExecutor")
 
