@@ -375,44 +375,57 @@ async def main():
 
                     try:
                         async with aiohttp.ClientSession() as session:
-                            for symbol, positions in list(live_open_positions.items()):
-                                for pos in positions:
-                                    # 1. Cancel existing OCO orders if possible
-                                    if pos.get("oco_order_list_id"):
-                                        cancel_params = {
-                                            "symbol": symbol,
-                                            "orderListId": pos["oco_order_list_id"],
-                                            "timestamp": int(time.time() * 1000)
-                                        }
-                                        qs = urllib.parse.urlencode(cancel_params)
-                                        sig = hmac.new(secret_key.encode('utf-8'), qs.encode('utf-8'), hashlib.sha256).hexdigest()
-                                        cancel_url = f"{base_url}/api/v3/orderList?{qs}&signature={sig}"
-                                        async with session.delete(cancel_url, headers=headers) as resp:
-                                            logger.info(f"KILL SWITCH: Cancelled OCO for {symbol}: HTTP {resp.status}")
-
-                                    # 2. Liquidate with MARKET order
-                                    liq_side = "SELL" if pos["side"] == "BUY" else "BUY"
-
-                                    # Pull precision
-                                    sym_info = exchange_info_cache.get(symbol, {})
-                                    step_size = sym_info.get("stepSize", "0.001")
-                                    liq_qty = format_precision(pos["qty"], step_size)
-
-                                    liq_params = {
+                            async def cancel_and_liquidate(symbol, pos):
+                                # 1. Cancel existing OCO orders if possible
+                                if pos.get("oco_order_list_id"):
+                                    cancel_params = {
                                         "symbol": symbol,
-                                        "side": liq_side,
-                                        "type": "MARKET",
-                                        "quantity": liq_qty,
+                                        "orderListId": pos["oco_order_list_id"],
                                         "timestamp": int(time.time() * 1000)
                                     }
-                                    qs2 = urllib.parse.urlencode(liq_params)
-                                    sig2 = hmac.new(secret_key.encode('utf-8'), qs2.encode('utf-8'), hashlib.sha256).hexdigest()
-                                    liq_url = f"{base_url}/api/v3/order?{qs2}&signature={sig2}"
+                                    qs = urllib.parse.urlencode(cancel_params)
+                                    sig = hmac.new(secret_key.encode('utf-8'), qs.encode('utf-8'), hashlib.sha256).hexdigest()
+                                    cancel_url = f"{base_url}/api/v3/orderList?{qs}&signature={sig}"
+                                    try:
+                                        async with session.delete(cancel_url, headers=headers) as resp:
+                                            logger.info(f"KILL SWITCH: Cancelled OCO for {symbol}: HTTP {resp.status}")
+                                    except Exception as e:
+                                        logger.error(f"Error cancelling OCO for {symbol}: {e}")
 
+                                # 2. Liquidate with MARKET order
+                                liq_side = "SELL" if pos["side"] == "BUY" else "BUY"
+
+                                # Pull precision
+                                sym_info = exchange_info_cache.get(symbol, {})
+                                step_size = sym_info.get("stepSize", "0.001")
+                                liq_qty = format_precision(pos["qty"], step_size)
+
+                                liq_params = {
+                                    "symbol": symbol,
+                                    "side": liq_side,
+                                    "type": "MARKET",
+                                    "quantity": liq_qty,
+                                    "timestamp": int(time.time() * 1000)
+                                }
+                                qs2 = urllib.parse.urlencode(liq_params)
+                                sig2 = hmac.new(secret_key.encode('utf-8'), qs2.encode('utf-8'), hashlib.sha256).hexdigest()
+                                liq_url = f"{base_url}/api/v3/order?{qs2}&signature={sig2}"
+
+                                try:
                                     async with session.post(liq_url, headers=headers) as resp:
                                         logger.info(f"KILL SWITCH: Liquidated {liq_qty} of {symbol} at Market: HTTP {resp.status}")
+                                except Exception as e:
+                                    logger.error(f"Error liquidating {symbol}: {e}")
+
+                            tasks = []
+                            for symbol, positions in list(live_open_positions.items()):
+                                for pos in positions:
+                                    tasks.append(cancel_and_liquidate(symbol, pos))
+
+                            if tasks:
+                                await asyncio.gather(*tasks)
                     except Exception as e:
-                        logger.error(f"Error during KILL SWITCH liquidation: {e}")
+                        logger.error(f"Error during KILL SWITCH liquidation setup: {e}")
 
                     live_open_positions.clear()
                     await redis_client.set("state:live_positions", "{}")
