@@ -19,7 +19,10 @@ class TradeRepository(ABC):
 class TimescaleTradeRepository(TradeRepository):
     def __init__(self):
         self.pool = None
-        self.dsn = f"postgresql://{os.getenv('DB_USER', 'crypto_user')}:{os.getenv('DB_PASSWORD', 'crypto_pass')}@{os.getenv('DB_HOST', 'timescaledb')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', 'cryptoscalper_db')}"
+        db_password = os.getenv('DB_PASSWORD')
+        if not db_password:
+            raise ValueError("DB_PASSWORD environment variable must be set")
+        self.dsn = f"postgresql://{os.getenv('DB_USER', 'crypto_user')}:{db_password}@{os.getenv('DB_HOST', 'timescaledb')}:{os.getenv('DB_PORT', '5432')}/{os.getenv('DB_NAME', 'cryptoscalper_db')}"
 
     async def connect(self):
         if not self.pool:
