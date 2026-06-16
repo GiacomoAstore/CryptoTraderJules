@@ -4,8 +4,10 @@ import asyncio
 import json
 import os
 import redis.asyncio as redis
-import urllib.request
-import urllib.parse
+import aiohttp
+
+http_client: aiohttp.ClientSession | None = None
+
 from prometheus_fastapi_instrumentator import Instrumentator
 
 app = FastAPI(title="CryptoScalper API Gateway")
@@ -125,6 +127,9 @@ async def compute_daily_performance():
 
 @app.on_event("startup")
 async def startup_event():
+    global http_client
+    http_client = aiohttp.ClientSession()
+
     # Connect to TimescaleDB
     await trade_repo.connect()
     # Start Redis listener in background
@@ -134,17 +139,27 @@ async def startup_event():
     scheduler.add_job(compute_daily_performance, 'cron', hour=23, minute=59)
     scheduler.start()
 
-def send_telegram_alert(message: str):
+@app.on_event("shutdown")
+async def shutdown_event():
+    global http_client
+    if http_client:
+        await http_client.close()
+
+async def send_telegram_alert(message: str):
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     chat_id = os.getenv("TELEGRAM_CHAT_ID")
     if not bot_token or not chat_id or bot_token == "your_telegram_token":
         return
 
+    if http_client is None:
+        print("http_client is not initialized")
+        return
+
     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-    data = urllib.parse.urlencode({'chat_id': chat_id, 'text': message}).encode('utf-8')
+    data = {'chat_id': chat_id, 'text': message}
     try:
-        req = urllib.request.Request(url, data=data)
-        urllib.request.urlopen(req, timeout=5)
+        async with http_client.post(url, data=data, timeout=5) as response:
+            pass
     except Exception as e:
         print(f"Failed to send telegram alert: {e}")
 
@@ -168,7 +183,7 @@ async def redis_listener():
             if channel == "alerts":
                 # Assuming data is a dict with a "message" key
                 msg_text = data.get("message", str(data))
-                asyncio.get_event_loop().run_in_executor(None, send_telegram_alert, msg_text)
+                asyncio.create_task(send_telegram_alert(msg_text))
 
             ws_msg = json.dumps({"channel": channel, "data": data})
             await manager.broadcast(ws_msg)
