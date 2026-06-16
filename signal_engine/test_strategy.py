@@ -31,3 +31,35 @@ def test_momentum_burst_strategy_sell_signal():
     assert signal is not None
     assert signal.direction == "SELL"
     assert signal.symbol == "BTCUSDT"
+
+def test_momentum_burst_strategy_invalid_tick_type():
+    strategy = MomentumBurstStrategy(lookback=3, threshold=0.05)
+    context = MarketContext(price_history={"BTCUSDT": [100, 101, 102]})
+    tick = NormalizedTick("BTCUSDT", 1000, "bookTicker", price=110)
+
+    signal = strategy.generate_signal(tick, context)
+    assert signal is None
+
+def test_momentum_burst_strategy_missing_price():
+    strategy = MomentumBurstStrategy(lookback=3, threshold=0.05)
+    context = MarketContext(price_history={"BTCUSDT": [100, 101, 102]})
+    tick = NormalizedTick("BTCUSDT", 1000, "trade", price=None)
+
+    signal = strategy.generate_signal(tick, context)
+    assert signal is None
+
+def test_momentum_burst_strategy_below_threshold():
+    strategy = MomentumBurstStrategy(lookback=3, threshold=0.05)
+    context = MarketContext(price_history={"BTCUSDT": [100, 101, 102]})
+    tick = NormalizedTick("BTCUSDT", 1000, "trade", price=101)
+
+    signal = strategy.generate_signal(tick, context)
+    assert signal is None
+
+def test_momentum_burst_strategy_zero_old_price():
+    strategy = MomentumBurstStrategy(lookback=3, threshold=0.05)
+    context = MarketContext(price_history={"BTCUSDT": [0, 101, 102]})
+    tick = NormalizedTick("BTCUSDT", 1000, "trade", price=110)
+
+    signal = strategy.generate_signal(tick, context)
+    assert signal is None

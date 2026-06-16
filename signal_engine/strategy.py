@@ -67,6 +67,9 @@ class MomentumBurstStrategy(BaseStrategy):
         old_price = history[-self.lookback]
         current_price = tick.price
 
+        if old_price == 0:
+            return None
+
         # Calculate rate of change over the lookback period
         roc = (current_price - old_price) / old_price
 
