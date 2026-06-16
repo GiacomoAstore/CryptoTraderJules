@@ -13,8 +13,14 @@ function App() {
   const [symbol] = useState('btcusdt');
 
   useEffect(() => {
+    const apiKey = import.meta.env.VITE_API_KEY || 'default_api_key';
+    const headers = {
+      'X-API-Key': apiKey,
+      'Content-Type': 'application/json'
+    };
+
     // Initial fetch of trades via REST API
-    fetch('http://localhost:8000/api/trades')
+    fetch('http://localhost:8000/api/trades', { headers })
       .then((res) => res.json())
       .then((data) => {
         if (data && data.trades) {
@@ -24,7 +30,7 @@ function App() {
       .catch((err) => console.error("Failed to fetch initial trades:", err));
 
     // Initial fetch of metrics via REST API
-    fetch('http://localhost:8000/api/metrics')
+    fetch('http://localhost:8000/api/metrics', { headers })
       .then((res) => res.json())
       .then((data) => {
         if (data && data.metrics) {
@@ -50,7 +56,12 @@ function App() {
           // Prepend new trade to the list
           setTrades(prev => [msg.data, ...prev].slice(0, 50));
           // Refresh metrics since a trade executed
-          fetch('http://localhost:8000/api/metrics')
+          fetch('http://localhost:8000/api/metrics', {
+            headers: {
+              'X-API-Key': import.meta.env.VITE_API_KEY || 'default_api_key',
+              'Content-Type': 'application/json'
+            }
+          })
             .then((res) => res.json())
             .then((data) => {
               if (data && data.metrics) {
@@ -77,9 +88,15 @@ function App() {
 
   const handleKillSwitch = () => {
     if (window.confirm("ARE YOU SURE? This will halt all new trades globally!")) {
-      fetch('http://localhost:8000/api/kill-switch', { method: 'POST' })
+      fetch('http://localhost:8000/api/kill-switch', {
+          method: 'POST',
+          headers: {
+            'X-API-Key': import.meta.env.VITE_API_KEY || 'default_api_key',
+            'Content-Type': 'application/json'
+          }
+        })
         .then(res => res.json())
-        .then(data => alert(data.message))
+        .then(data => alert(data.message || data.detail))
         .catch(() => alert("Failed to trigger Kill Switch!"));
     }
   };

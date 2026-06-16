@@ -80,6 +80,8 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      - API_KEY=${API_KEY:-default_api_key}
     ports:
       - "8000:8000"
     depends_on:
