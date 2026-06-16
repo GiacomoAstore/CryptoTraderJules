@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 import json
@@ -178,12 +178,12 @@ def read_root():
     return {"status": "ok", "service": "CryptoScalper API Gateway"}
 
 @app.get("/api/trades")
-async def get_trades(limit: int = 50):
+async def get_trades(limit: int = Query(50, ge=1, le=100)):
     trades = await trade_repo.get_recent_trades(limit=limit)
     return {"status": "ok", "trades": trades}
 
 @app.get("/api/trades/{symbol}")
-async def get_trades_by_symbol(symbol: str, limit: int = 50):
+async def get_trades_by_symbol(symbol: str, limit: int = Query(50, ge=1, le=100)):
     trades = await trade_repo.get_trades_by_symbol(symbol=symbol.upper(), limit=limit)
     return {"status": "ok", "trades": trades}
 
