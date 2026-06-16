@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
 import time
+from collections import deque
+from typing import Dict
 from models import NormalizedTick, Signal, MarketContext
 
 class BaseStrategy(ABC):
@@ -14,17 +16,29 @@ class BaseStrategy(ABC):
 class EMAStrategy(BaseStrategy):
     def __init__(self, is_shadow: bool = False):
         super().__init__("EMA Crossover", is_shadow)
+        self.sma_history: Dict[str, deque] = {}
+        self.rolling_sum: Dict[str, float] = {}
 
     def generate_signal(self, tick: NormalizedTick, context: MarketContext) -> Signal | None:
         if tick.type != "trade" or not tick.price:
             return None
 
-        history = context.price_history.get(tick.symbol, [])
+        if tick.symbol not in self.sma_history:
+            self.sma_history[tick.symbol] = deque(maxlen=20)
+            self.rolling_sum[tick.symbol] = 0.0
+
+        history = self.sma_history[tick.symbol]
+        if len(history) == 20:
+            self.rolling_sum[tick.symbol] -= history[0]
+
+        history.append(tick.price)
+        self.rolling_sum[tick.symbol] += tick.price
+
         if len(history) < 20:
             return None
 
-        # Simple SMA for scaffold demonstration
-        avg = sum(history[-20:]) / 20
+        # O(1) rolling Simple SMA
+        avg = self.rolling_sum[tick.symbol] / 20
         if tick.price > avg * 1.01:
             return Signal(tick.symbol, "BUY", 0.8, self.name, int(time.time()*1000), tick.price, 0.01, self.is_shadow)
         elif tick.price < avg * 0.99:
