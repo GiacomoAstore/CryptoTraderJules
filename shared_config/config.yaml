@@ -65,46 +65,6 @@ strategies:
       min_volume: 0.25
       max_spread_bps: 8
 
-  - name: "VWAPDeviationStrategy"
-    enabled: false
-    weight: 0.8
-    variant_a:
-      deviation_threshold: 0.0035
-      min_ticks: 20
-      rsi_oversold: 32
-      rsi_overbought: 68
-      max_spread_bps: 10
-    variant_b:
-      deviation_threshold: 0.0028
-      min_ticks: 25
-      rsi_oversold: 28
-      rsi_overbought: 72
-      max_spread_bps: 8
-
-  - name: "VolatilityExpansionStrategy"
-    enabled: false
-    weight: 1.0
-    variant_a:
-      squeeze_chop_max: 2.2
-      breakout_atr_mult: 1.4
-      max_spread_bps: 10
-    variant_b:
-      squeeze_chop_max: 1.8
-      breakout_atr_mult: 1.6
-      max_spread_bps: 8
-
-  - name: "BollingerMeanReversionStrategy"
-    enabled: false
-    weight: 0.7
-    variant_a:
-      period: 20
-      std_mult: 2.0
-      max_spread_bps: 10
-    variant_b:
-      period: 16
-      std_mult: 2.2
-      max_spread_bps: 8
-
   - name: "MicroStructureBreakoutStrategy"
     enabled: false
     weight: 0.6

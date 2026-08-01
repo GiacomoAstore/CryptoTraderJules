@@ -11,10 +11,7 @@ ALLOWED_STRATEGIES = frozenset({
     "EMACrossoverStrategy",
     "EmaCrossoverStrategy",
     "OrderBookImbalanceStrategy",
-    "VWAPDeviationStrategy",
     "MomentumBurstStrategy",
-    "VolatilityExpansionStrategy",
-    "BollingerMeanReversionStrategy",
     "MicroStructureBreakoutStrategy",
 })
 

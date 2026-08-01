@@ -214,14 +214,209 @@ class PaperEngine:
         """Transition a pending order to FILLED and open a live position."""
         cmd.status = "FILLED"
         cmd.executed_price = fill_price
+MAX_TRADE_DURATION_SECONDS = int(os.getenv("MAX_TRADE_DURATION_SECONDS", 300))
+PENDING_ORDER_TIMEOUT_SECONDS = int(os.getenv("PENDING_ORDER_TIMEOUT_SECONDS", 300))
+
+
+async def is_bot_running(redis_client) -> bool:
+    status = await redis_client.get("bot:status")
+    return status == "running"
+
+class OrderCommand:
+    def __init__(self, data: dict):
+        self.command_id = data.get("command_id", str(uuid.uuid4()))
+        self.symbol = data["symbol"]
+        self.direction = data["type"] # BUY or SELL
+        self.target_price = Decimal(str(data["price"]))  # This is the LIMIT entry price
+        self.signal_price = Decimal(str(data.get("signal_price", data["price"])))
+        self.quantity = Decimal(str(data["quantity"]))
+        self.stop_loss = Decimal(str(data["stop_loss_price"])) if data.get("stop_loss_price") else None
+        self.take_profit = Decimal(str(data["take_profit_price"])) if data.get("take_profit_price") else None
+        self.strategy = data.get("strategy", "Unknown")
+        self.ab_variant = data.get("ab_variant", "A")
+        self.trailing_distance = (
+            Decimal(str(data["trailing_stop_distance"])) if data.get("trailing_stop_distance") else None
+        )
+        self.pending_order_timeout = int(data.get("pending_order_timeout_seconds", PENDING_ORDER_TIMEOUT_SECONDS))
+        self.created_at = time.time()
+        self.status = "PENDING"
+        self.executed_price = Decimal("0")
+        self.peak_price = Decimal("0")
+        self.breakeven_set: bool = False
+        # ATR in basis points passed from RiskManager in approved_orders payload (float bps)
+        self.atr_bps: float | None = data.get("atr_bps")
+        
+    def to_dict(self):
+        return {
+            "command_id": self.command_id,
+            "symbol": self.symbol,
+            "type": self.direction,
+            "price": str(self.target_price),
+            "quantity": str(self.quantity),
+            "stop_loss_price": str(self.stop_loss) if self.stop_loss else None,
+            "take_profit_price": str(self.take_profit) if self.take_profit else None,
+            "strategy": self.strategy,
+            "ab_variant": self.ab_variant,
+            "status": self.status,
+            "executed_price": str(self.executed_price),
+            "created_at": self.created_at
+        }
+
+class PaperEngine:
+    def __init__(self, redis_client, db_pool):
+        self.redis_client = redis_client
+        self.db_pool = db_pool
+        self.open_positions: Dict[str, OrderCommand] = {}   # symbol_variant -> filled cmd
+        self.pending_orders: Dict[str, OrderCommand] = {}   # symbol_variant -> pending cmd
+        self.paper_balances = {
+            "A": Decimal("100"),
+            "B": Decimal("100")
+        }
+        # Simple ATR estimator per symbol (uses recent true ranges)
+        from collections import defaultdict, deque
+
+        self.atr_windows: dict[str, deque[Decimal]] = defaultdict(lambda: deque(maxlen=14))
+        self.atr_by_symbol: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+        self.last_price_by_symbol: dict[str, Decimal] = {}
+
+    async def publish_order_event(self, *, status: str, pos_key: str, cmd: OrderCommand, extra: dict[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {
+            "status": status,
+            "pos_key": pos_key,
+            "command_id": cmd.command_id,
+            "symbol": cmd.symbol,
+            "ab_variant": cmd.ab_variant,
+            "side": cmd.direction,
+            "quantity": float(cmd.quantity),
+            "strategy_name": cmd.strategy,
+            "created_at_ts": cmd.created_at,
+        }
+        if extra:
+            payload.update(extra)
+        await self.redis_client.publish("order_events", json.dumps(payload))
+
+    async def init_ledger(self):
+        balance_a = await self.redis_client.get("paper:balance:A")
+        if balance_a:
+            self.paper_balances["A"] = Decimal(balance_a)
+        else:
+            await self.redis_client.set("paper:balance:A", str(self.paper_balances["A"]))
+            
+        balance_b = await self.redis_client.get("paper:balance:B")
+        if balance_b:
+            self.paper_balances["B"] = Decimal(balance_b)
+        else:
+            await self.redis_client.set("paper:balance:B", str(self.paper_balances["B"]))
+
+        # Caricamento posizioni aperte dal DB
+        try:
+            async with self.db_pool.acquire() as conn:
+                rows = await conn.fetch("SELECT * FROM positions")
+                for row in rows:
+                    cmd = OrderCommand({
+                        "symbol": row["symbol"],
+                        "type": row["side"],
+                        "price": str(row["entry_price"]),
+                        "quantity": str(row["quantity"]),
+                        "stop_loss_price": str(row["stop_loss"]),
+                        "take_profit_price": str(row["take_profit"]),
+                        "ab_variant": row["ab_variant"]
+                    })
+                    cmd.status = "FILLED"
+                    cmd.executed_price = row["entry_price"]
+                    # Reset created_at to NOW so reloaded positions don't
+                    # immediately TIMEOUT on restart
+                    cmd.created_at = time.time()
+                    pos_key = f"{cmd.symbol}_{cmd.ab_variant}"
+                    # load breakeven flag and atr_bps from Redis if present
+                    try:
+                        val = await self.redis_client.get(f"position:breakeven:{pos_key}")
+                        cmd.breakeven_set = bool(int(val)) if val is not None else False
+                    except Exception:
+                        cmd.breakeven_set = False
+                    try:
+                        atv = await self.redis_client.get(f"position:atr_bps:{pos_key}")
+                        if atv is not None:
+                            cmd.atr_bps = float(atv)
+                    except Exception:
+                        pass
+                    self.open_positions[pos_key] = cmd
+                logger.info(f"Loaded {len(rows)} open positions from DB.")
+        except Exception as e:
+            logger.error(f"Error loading positions from DB: {e}")
+
+    async def save_order_to_db(self, cmd: OrderCommand):
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Update orders history
+                await conn.execute("""
+                    INSERT INTO orders (id, symbol, side, price, quantity, status, strategy, ab_variant)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    ON CONFLICT (id) DO UPDATE SET status = EXCLUDED.status
+                """, uuid.UUID(cmd.command_id), cmd.symbol, cmd.direction, cmd.target_price, cmd.quantity, cmd.status, cmd.strategy, cmd.ab_variant)
+                
+                # Update active positions table
+                if cmd.status == "FILLED":
+                    await conn.execute("""
+                        INSERT INTO positions (symbol, ab_variant, entry_time, entry_price, quantity, side, stop_loss, take_profit)
+                        VALUES ($1, $2, NOW(), $3, $4, $5, $6, $7)
+                        ON CONFLICT (symbol, ab_variant) DO NOTHING
+                    """, cmd.symbol, cmd.ab_variant, cmd.executed_price, cmd.quantity, cmd.direction, cmd.stop_loss, cmd.take_profit)
+        except Exception as e:
+            logger.error(f"DB Error saving order/position: {e}")
+
+    async def process_new_command(self, cmd_data: dict):
+        if not await is_bot_running(self.redis_client):
+            logger.info("Order ignored: bot is not running.")
+            return
+
+        cmd = OrderCommand(cmd_data)
+
+        # 1. Idempotency Check (Persistent on Redis)
+        lock_key = f"exec:lock:{cmd.command_id}"
+        if not await self.redis_client.setnx(lock_key, "1"):
+            logger.warning(f"Duplicate command ignored (Redis Lock): {cmd.command_id}")
+            return
+        await self.redis_client.expire(lock_key, 86400) # 24h
+
+        pos_key = f"{cmd.symbol}_{cmd.ab_variant}"
+
+        # 2. Reject if already have an open position or pending order on this key
+        if pos_key in self.open_positions:
+            logger.info(f"Order rejected: already have open position for {pos_key}")
+            return
+        if pos_key in self.pending_orders:
+            logger.info(f"Order rejected: already have pending order for {pos_key}")
+            return
+
+        # 3. Persist as PENDING in DB
+        await self.save_order_to_db(cmd)
+
+        # 4. Track pending stats in Redis
+        day_key = time.strftime("%Y-%m-%d")
+        await self.redis_client.incr(f"pending:stats:placed:{day_key}")
+        await self.redis_client.expire(f"pending:stats:placed:{day_key}", 172800)
+
+        # 5. Park in pending queue — monitor_ticks will fill or expire it
+        self.pending_orders[pos_key] = cmd
+        logger.info(
+            f"LIMIT ORDER PENDING [{cmd.ab_variant}]: {cmd.direction} {cmd.quantity:.4f} {cmd.symbol} "
+            f"| Signal@{cmd.signal_price:.4f} → Limit@{cmd.target_price:.4f} "
+            f"| Timeout: {cmd.pending_order_timeout}s"
+        )
+
+    async def fill_pending_order(self, pos_key: str, cmd: OrderCommand, fill_price: Decimal):
+        """Transition a pending order to FILLED and open a live position."""
+        cmd.status = "FILLED"
+        cmd.executed_price = fill_price
         cmd.peak_price = fill_price
         cmd.breakeven_set = False
 
         await self.save_order_to_db(cmd)
 
         # Persist atr_bps to Redis for later recovery (if provided)
-        try:
-            pass
+        if getattr(cmd, "atr_bps", None) is not None:
+            await self.redis_client.set(f"position:atr_bps:{pos_key}", str(cmd.atr_bps))
 
         del self.pending_orders[pos_key]
         self.open_positions[pos_key] = cmd
