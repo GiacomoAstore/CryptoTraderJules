@@ -44,7 +44,7 @@ async def handle_order(cmd):
 
 ### Riconciliazione (Exchange Reconciliation)
 È fondamentale un loop di riconciliazione che gira ogni minuto:
-1. Scarica posizioni aperte da Binance REST API.
+1. Scarica posizioni aperte da Crypto.com REST API.
 2. Confronta con le posizioni segnate nel Database locale.
 3. Se discrepanza > `tolerance`, ferma il bot e invia alert critico.
 
@@ -98,9 +98,9 @@ def calculate_qty(balance, risk_pct, price, sl_dist):
 
 - [ ] **Persistenza:** Le posizioni sopravvivono a `docker-compose restart`.
 - [ ] **Auth:** Tutte le API e WS richiedono JWT valido.
-- [ ] **Secrets:** Le chiavi API di Binance non sono presenti in alcun file git o log.
+- [ ] **Secrets:** Le chiavi API di Crypto.com non sono presenti in alcun file git o log.
 - [ ] **Precisione:** Test unitari confermano 0 errori di arrotondamento su 1 milione di trade.
-- [ ] **Reconciliation:** Il bot rileva automaticamente un ordine chiuso manualmente su Binance.
+- [ ] **Reconciliation:** Il bot rileva automaticamente un ordine chiuso manualmente su Crypto.com.
 - [ ] **Kill Switch:** Testato con successo in ambiente di test.
 
 ---

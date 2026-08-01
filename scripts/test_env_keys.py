@@ -35,39 +35,53 @@ def mask(value: str) -> str:
     return f"{value[:4]}...{value[-4:]} (len={len(value)})"
 
 
-async def test_binance(key: str, secret: str) -> dict:
+async def test_cryptocom(key: str, secret: str) -> dict:
     if not key or not secret:
-        return {"ok": False, "message": "BINANCE_API_KEY o BINANCE_API_SECRET mancanti"}
+        return {"ok": False, "message": "CRYPTOCOM_API_KEY o CRYPTOCOM_API_SECRET mancanti"}
     if key.startswith("your_") or "here" in key.lower():
         return {"ok": False, "message": "Chiavi placeholder, non valide"}
 
-    params = {"timestamp": int(time.time() * 1000)}
-    qs = urlencode(params)
-    sig = hmac.new(secret.encode(), qs.encode(), hashlib.sha256).hexdigest()
-    url = f"https://api.binance.com/api/v3/account?{qs}&signature={sig}"
-    headers = {"X-MBX-APIKEY": key}
+    method = "private/get-account-summary"
+    req_id = 1
+    nonce = int(time.time() * 1000)
+    payload = f"{method}{req_id}{key}{nonce}"
+    sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()
+
+    body = {
+        "id": req_id,
+        "method": method,
+        "params": {},
+        "sig": sig,
+        "api_key": key,
+        "nonce": nonce,
+    }
+    url = "https://api.crypto.com/exchange/v1/private/get-account-summary"
 
     async with httpx.AsyncClient(timeout=15.0) as client:
-        r = await client.get(url, headers=headers)
+        r = await client.post(url, json=body)
     if r.status_code == 200:
         data = r.json()
-        balances = [
-            b for b in data.get("balances", [])
-            if float(b.get("free", 0)) > 0 or float(b.get("locked", 0)) > 0
-        ]
-        return {
-            "ok": True,
-            "message": f"Autenticazione OK — {len(balances)} asset con saldo > 0",
-            "can_trade": data.get("canTrade"),
-            "permissions": data.get("permissions"),
-        }
+        code = data.get("code", -1)
+        if code == 0:
+            accounts = data.get("result", {}).get("accounts", [])
+            balances = [
+                a for a in accounts
+                if float(a.get("available", 0)) > 0 or float(a.get("order", 0)) > 0
+            ]
+            return {
+                "ok": True,
+                "message": f"Autenticazione OK — {len(balances)} asset con saldo > 0",
+            }
+        else:
+            return {"ok": False, "message": f"Errore API Crypto.com {code}: {data.get('message', 'Errore sconosciuto')}"}
     try:
         err = r.json()
-        msg = err.get("msg", r.text[:200])
+        msg = err.get("message", r.text[:200])
         code = err.get("code", r.status_code)
     except Exception:
         msg, code = r.text[:200], r.status_code
     return {"ok": False, "message": f"HTTP {r.status_code} — code {code}: {msg}"}
+
 
 
 async def test_telegram(token: str, chat_id: str) -> dict:
@@ -149,8 +163,8 @@ async def main():
     print(f"File: {ENV_PATH}\n")
 
     checks = [
-        ("BINANCE_API_KEY", env.get("BINANCE_API_KEY", "")),
-        ("BINANCE_API_SECRET", env.get("BINANCE_API_SECRET", "")),
+        ("CRYPTOCOM_API_KEY", env.get("CRYPTOCOM_API_KEY", "")),
+        ("CRYPTOCOM_API_SECRET", env.get("CRYPTOCOM_API_SECRET", "")),
         ("TELEGRAM_BOT_TOKEN", env.get("TELEGRAM_BOT_TOKEN", "")),
         ("TELEGRAM_CHAT_ID", env.get("TELEGRAM_CHAT_ID", "")),
         ("GROQ_API_KEY", env.get("GROQ_API_KEY", "")),
@@ -163,9 +177,9 @@ async def main():
     print()
 
     tests = [
-        ("Binance REST (account)", test_binance(
-            env.get("BINANCE_API_KEY", ""),
-            env.get("BINANCE_API_SECRET", ""),
+        ("Crypto.com REST (account)", test_cryptocom(
+            env.get("CRYPTOCOM_API_KEY", ""),
+            env.get("CRYPTOCOM_API_SECRET", ""),
         )),
         ("Telegram Bot", test_telegram(
             env.get("TELEGRAM_BOT_TOKEN", ""),

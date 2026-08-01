@@ -221,17 +221,13 @@ class PaperEngine:
 
         # Persist atr_bps to Redis for later recovery (if provided)
         try:
-            if getattr(cmd, "atr_bps", None) is not None:
-                await self.redis_client.set(f"position:atr_bps:{pos_key}", str(cmd.atr_bps))
-        except Exception:
             pass
 
         del self.pending_orders[pos_key]
         self.open_positions[pos_key] = cmd
-
-        # persist initial breakeven flag (not set)
         try:
-            await self.redis_client.set(f"position:breakeven:{pos_key}", "0")
+            pos_dict = {"symbol": cmd.symbol, "ab_variant": cmd.ab_variant, "entry_price": str(fill_price), "quantity": str(cmd.quantity)}
+            await self.redis_client.set(f"positions:active:{pos_key}", json.dumps(pos_dict))
         except Exception:
             pass
 
@@ -340,6 +336,10 @@ class PaperEngine:
             extra=trade_record,
         )
         del self.open_positions[pos_key]
+        try:
+            await self.redis_client.delete(f"positions:active:{pos_key}")
+        except Exception:
+            pass
         logger.info(f"POSITION CLOSED [{pos.ab_variant}]: {pos.symbol} @ {close_price} | PNL: {net_pnl:.2f} ({pnl_pct:.2f}%)")
 
 

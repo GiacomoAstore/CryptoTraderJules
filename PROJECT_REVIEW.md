@@ -31,7 +31,7 @@ Il progetto presenta un'architettura a microservizi moderna e ben strutturata, c
 
 ```mermaid
 graph TD
-    BI[Binance WS] --> DI[Data Ingestion]
+    BI[Crypto.com WS] --> DI[Data Ingestion]
     DI -- "ticks:SYMBOL (Pub/Sub)" --> RE[Redis]
     RE -- "ticks:*" --> SE[Signal Engine]
     SE -- "signals:*" --> RM[Risk Manager]
@@ -48,7 +48,7 @@ graph TD
 ```
 
 ### Moduli Principali
-- **`data_ingestion`**: Consumatore WebSocket Binance.
+- **`data_ingestion`**: Consumatore WebSocket Crypto.com Exchange.
 - **`signal_engine`**: Motore multi-strategia con supporto A/B.
 - **`risk_manager`**: Validatore di segnali e circuit breaker.
 - **`order_executor`**: Motore di esecuzione (Paper Trading implementato).

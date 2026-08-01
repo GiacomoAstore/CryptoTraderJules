@@ -318,7 +318,7 @@ function App() {
 
       <div className="portfolio-dashboard" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px', marginBottom: '32px' }}>
         <div className="glass-panel stat-card" style={{ gridColumn: '1 / -1', background: 'rgba(20, 25, 40, 0.7)', border: '1px solid var(--primary)' }}>
-          <h3 style={{ color: 'var(--primary)' }}>Binance Account (Read-Only)</h3>
+          <h3 style={{ color: 'var(--primary)' }}>Crypto.com Account (Read-Only)</h3>
           <div style={{ marginBottom: '16px' }}>
             <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>Total Value: </span>
             <span style={{ fontSize: '2rem', fontWeight: 'bold', color: 'var(--text)' }}>
@@ -346,7 +346,7 @@ function App() {
               {(!realPortfolio.balances || realPortfolio.balances.length === 0) && (
                 <tr>
                   <td colSpan="4" style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)' }}>
-                    No Binance balances or API keys not configured.
+                    No Crypto.com balances or API keys not configured.
                   </td>
                 </tr>
               )}

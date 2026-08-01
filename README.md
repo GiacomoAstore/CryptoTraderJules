@@ -1,6 +1,6 @@
 # CryptoScalper Pro
 
-CryptoScalper Pro is an algorithmic trading platform designed to execute high-frequency scalping strategies on Binance. It captures micro-price movements by constantly monitoring the market 24/7.
+CryptoScalper Pro is an algorithmic trading platform designed to execute high-frequency scalping strategies on Crypto.com Exchange. It captures micro-price movements by constantly monitoring the market 24/7.
 
 **Current mode:** paper trading simulation (no live orders on the exchange).
 
@@ -10,7 +10,7 @@ The system is built as a microservice architecture using Docker Compose:
 
 | Service | Role |
 |---------|------|
-| `data_ingestion` | Binance WebSocket → normalized ticks on Redis |
+| `data_ingestion` | Crypto.com WebSocket → normalized ticks on Redis |
 | `signal_engine` | Multi-strategy consensus + A/B variants |
 | `risk_manager` | Sizing, circuit breaker, fee checks |
 | `order_executor` | Paper fill engine (SL/TP/timeout) |
@@ -84,4 +84,4 @@ python test_apis.py
 
 ## Important Note
 
-High-frequency algorithmic trading involves significant risk. Always test in **PAPER** mode before using real funds. The dashboard labels paper vs read-only Binance account explicitly.
+High-frequency algorithmic trading involves significant risk. Always test in **PAPER** mode before using real funds. The dashboard labels paper vs read-only Crypto.com account explicitly.

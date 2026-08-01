@@ -111,6 +111,26 @@ class RiskManager:
         # ATR cache: symbol -> (atr_value: Decimal, is_real: bool)
         self.atr_cache: Dict[str, tuple[Decimal, bool]] = {}
 
+    async def restore_state(self):
+        for key, target in (
+            ("risk:open_positions", self.open_positions),
+            ("risk:pending_orders", self.pending_orders),
+        ):
+            raw = await self.redis_client.get(key)
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    target.clear()
+                    target.update(data)
+            except Exception as exc:
+                logger.warning("Failed to restore %s from Redis: %s", key, exc)
+
+    async def persist_state(self):
+        await self.redis_client.set("risk:open_positions", json.dumps(self.open_positions))
+        await self.redis_client.set("risk:pending_orders", json.dumps(self.pending_orders))
+
     async def reload_params(self):
         self.params = await load_risk_params(self.redis_client)
         logger.info(
@@ -122,11 +142,33 @@ class RiskManager:
             self.params.min_profit_multiplier_vs_fees,
         )
 
-    async def get_paper_balance(self, variant: str = "A") -> Decimal:
+    async def get_total_balance(self, variant: str = "A") -> Decimal:
+        is_live = os.getenv("EXECUTION_MODE", "PAPER").upper() == "LIVE"
+        if is_live:
+            val = await self.redis_client.get("live:balance:usdt")
+            if val:
+                return Decimal(val)
         val = await self.redis_client.get(f"paper:balance:{variant}")
         if not val:
             val = await self.redis_client.get("paper:balance")
         return Decimal(val) if val else Decimal(os.getenv("STARTING_CAPITAL", "100.0"))
+
+    async def get_free_available_balance(self, variant: str = "A") -> Decimal:
+        total = await self.get_total_balance(variant)
+        committed = Decimal("0")
+        active_pos_keys = await self.redis_client.keys("positions:active:*")
+        for k in active_pos_keys:
+            raw = await self.redis_client.get(k)
+            if raw:
+                try:
+                    pos = json.loads(raw)
+                    entry_px = Decimal(str(pos.get("entry_price", "0")))
+                    qty = Decimal(str(pos.get("quantity", "0")))
+                    committed += entry_px * qty
+                except Exception:
+                    pass
+        free_bal = total - committed
+        return max(free_bal, Decimal("0"))
 
     async def get_daily_metrics(self):
         today = time.strftime("%Y-%m-%d")
@@ -296,18 +338,35 @@ class RiskManager:
             )
             return
 
-        balance = await self.get_paper_balance(signal.get("ab_variant", "A"))
-        risk_amount = balance * p.risk_per_trade_pct
+        total_balance = await self.get_total_balance(signal.get("ab_variant", "A"))
+        free_balance = await self.get_free_available_balance(signal.get("ab_variant", "A"))
+        risk_amount = total_balance * p.risk_per_trade_pct
         sl_distance = atr * p.stop_loss_atr_multiplier
 
         if sl_distance == 0:
             return
 
-        qty = risk_amount / sl_distance
-        exposure = qty * price
-        if exposure > p.max_exposure_per_symbol_usdt:
-            qty = p.max_exposure_per_symbol_usdt / price
-            logger.info(f"Capped {symbol} exposure to {p.max_exposure_per_symbol_usdt} USDT")
+        calc_exposure = (risk_amount / sl_distance) * price
+        exposure = min(calc_exposure, p.max_exposure_per_symbol_usdt, free_balance)
+
+        if exposure < Decimal("1.0"):
+            msg = (
+                f"🚫 Signal REJECTED: {symbol} {direction}\n"
+                f"Reason: LOW_FUNDS\nRequired Min Notional: $1.00 USDT\n"
+                f"Available Free Balance: ${float(free_balance):.2f} USDT"
+            )
+            logger.warning(msg)
+            await self.redis_client.incr(f"risk:stats:rejected_low_funds:{hour_key}")
+            await self.redis_client.expire(f"risk:stats:rejected_low_funds:{hour_key}", 86400)
+            await self.redis_client.publish(
+                "alerts:telegram",
+                json.dumps({"event": "risk_filter", "message": msg}),
+            )
+            return
+
+        qty = exposure / price
+        if exposure < calc_exposure:
+            logger.info(f"Capped {symbol} exposure to ${float(exposure):.2f} USDT (free balance / max cap limit)")
 
         if direction == "BUY":
             sl_price = price - (atr * p.stop_loss_atr_multiplier)
@@ -370,6 +429,7 @@ class RiskManager:
         }
 
         self.pending_orders[pos_key] = command
+        await self.persist_state()
         logger.info(
             f"Signal APPROVED [{command['ab_variant']}]: {command['type']} {command['symbol']} "
             f"Qty: {qty:.4f} | Signal@{price} → Limit@{limit_price:.4f} (-{float(p.entry_pullback_bps):.1f}bps) "
@@ -413,10 +473,12 @@ class RiskManager:
             if "fill_price" in event:
                 cmd["fill_price"] = event.get("fill_price")
             self.open_positions[pos_key] = cmd
+            await self.persist_state()
             return
 
         if status in {"CANCELLED", "TIMEOUT"}:
             self.pending_orders.pop(pos_key, None)
+            await self.persist_state()
             return
 
     async def handle_trade_execution(self, trade: dict):
@@ -426,6 +488,7 @@ class RiskManager:
             del self.open_positions[pos_key]
         if pos_key in self.pending_orders:
             del self.pending_orders[pos_key]
+        await self.persist_state()
 
         pnl = Decimal(str(trade.get("pnl_usdt", 0)))
         new_pnl, new_losses = await self.update_daily_metrics(pnl, pnl < 0)
@@ -604,6 +667,7 @@ async def main():
     await pubsub.psubscribe("signals:*", "order_events", "system:commands")
 
     rm = RiskManager(redis_client)
+    await rm.restore_state()
     await rm.reload_params()
 
     # Start DB connection pool and background ATR updater

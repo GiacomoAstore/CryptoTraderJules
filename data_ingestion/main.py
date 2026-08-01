@@ -19,9 +19,52 @@ formatter = jsonlogger.JsonFormatter('%(asctime)s %(levelname)s %(name)s %(messa
 logHandler.setFormatter(formatter)
 logger.addHandler(logHandler)
 
+# ---------------------------------------------------------------------------
+# Symbol helpers
+# ---------------------------------------------------------------------------
+
+def binance_to_cryptocom_symbol(symbol: str) -> str:
+    """Convert Binance-style 'BTCUSDT' to Crypto.com-style 'BTC_USDT'."""
+    symbol = symbol.upper()
+    if "_" in symbol:
+        return symbol
+    for quote in ("USDT", "USDC", "USD", "BTC", "ETH", "CRO"):
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            base = symbol[: -len(quote)]
+            return f"{base}_{quote}"
+    return f"{symbol[:-4]}_{symbol[-4:]}" if len(symbol) > 4 else symbol
+
+
+def cryptocom_to_internal_symbol(instrument_name: str) -> str:
+    """Convert Crypto.com 'BTC_USDT' to internal key 'btcusdt'."""
+    return instrument_name.replace("_", "").lower()
+
+
+def get_active_instruments() -> set[str]:
+    """Fetch active instrument names from Crypto.com Exchange API using built-in urllib."""
+    import urllib.request
+    import urllib.error
+    url = "https://api.crypto.com/exchange/v1/public/get-instruments"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=10) as response:
+            resp_data = json.loads(response.read().decode("utf-8"))
+            if resp_data.get("code") == 0:
+                instruments = resp_data.get("result", {}).get("data", [])
+                return {inst["symbol"].upper() for inst in instruments}
+    except Exception as e:
+        logger.error("Failed to fetch active instruments from REST API", extra={"error": str(e)})
+    return set()
+
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 _WATCHED_SYMBOLS_RAW = os.getenv(
     "WATCHED_SYMBOLS",
-    "btcusdt,ethusdt,bnbusdt,solusdt,xrpusdt,adausdt,dogeusdt,shibusdt,avaxusdt,dotusdt,linkusdt,trxusdt,ltcusdt,bchusdt,uniusdt,xlmusdt,nearusdt,atomusdt,aptusdt",
+    "btcusdt,ethusdt,solusdt,xrpusdt,adausdt,dogeusdt,avaxusdt,dotusdt,linkusdt,trxusdt,ltcusdt,bchusdt,uniusdt,xlmusdt,nearusdt,atomusdt,aptusdt",
 )
 SYMBOLS = [
     s.strip().lower()
@@ -30,6 +73,12 @@ SYMBOLS = [
 ]
 REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+
+# Crypto.com Exchange WebSocket URLs
+WS_MARKET_URL = os.getenv(
+    "CRYPTOCOM_WS_MARKET_URL",
+    "wss://stream.crypto.com/exchange/v1/market",
+)
 
 class NormalizedTick(TypedDict):
     symbol: str
@@ -95,74 +144,161 @@ async def publish_tick(redis_client, symbol: str):
     if tick_writer:
         await tick_writer.enqueue(tick)
 
-async def binance_websocket_consumer(redis_client):
-    streams = []
+
+async def cryptocom_websocket_consumer(redis_client):
+    """Connect to Crypto.com Exchange WebSocket and consume market data.
+
+    Subscribes to:
+      - trade.{instrument} — individual trades
+      - ticker.{instrument} — best bid/ask (replaces Binance bookTicker)
+      - book.{instrument}.20 — order book depth 20
+    """
+    # Fetch active instruments first
+    active_instruments = get_active_instruments()
+    logger.info("Fetched active instruments from exchange", extra={"count": len(active_instruments)})
+
+    # Build Crypto.com instrument names from WATCHED_SYMBOLS and filter by active instruments
+    instruments = []
     for s in SYMBOLS:
-        streams.append(f"{s}@trade")
-        streams.append(f"{s}@depth20@100ms")
-        streams.append(f"{s}@bookTicker")
-    
-    stream_param = '/'.join(streams)
-    uri = f"wss://stream.binance.com:9443/stream?streams={stream_param}"
-    
+        inst = binance_to_cryptocom_symbol(s)
+        if not active_instruments or inst.upper() in active_instruments:
+            instruments.append(inst)
+        else:
+            logger.warning("Symbol not available on Crypto.com Exchange — filtered out", extra={"symbol": s, "mapped": inst})
+
+    channels = []
+    for inst in instruments:
+        channels.append(f"trade.{inst}")
+        channels.append(f"ticker.{inst}")
+        channels.append(f"book.{inst}.20")
+
     backoff = 1
     max_backoff = 30
 
     while True:
-        logger.info("Connecting to Binance WS", extra={"uri": uri})
+        logger.info("Connecting to Crypto.com WS", extra={"uri": WS_MARKET_URL})
         try:
-            async with websockets.connect(uri) as websocket:
-                logger.info("Connected to Binance WebSocket.")
-                backoff = 1 # reset backoff on successful connection
-                
+            async with websockets.connect(WS_MARKET_URL) as websocket:
+                logger.info("Connected to Crypto.com WebSocket.")
+                backoff = 1  # reset backoff on successful connection
+
+                # Wait 1 second before subscribing (recommended by Crypto.com docs)
+                await asyncio.sleep(1)
+
+                # Subscribe to all channels
+                subscribe_msg = json.dumps({
+                    "id": 1,
+                    "method": "subscribe",
+                    "params": {"channels": channels},
+                    "nonce": int(time.time() * 1000),
+                })
+                await websocket.send(subscribe_msg)
+                logger.info("Subscribed to channels", extra={"count": len(channels)})
+
                 while True:
                     message = await websocket.recv()
                     payload = json.loads(message)
-                    stream_name = payload.get("stream", "")
-                    data = payload.get("data", {})
-                    
-                    if not data:
-                        continue
-                        
-                    symbol = data.get("s", "").lower()
-                    if not symbol:
+
+                    method = payload.get("method", "")
+
+                    if not hasattr(cryptocom_websocket_consumer, "_msg_count"):
+                        cryptocom_websocket_consumer._msg_count = 0
+                    if cryptocom_websocket_consumer._msg_count < 10:
+                        cryptocom_websocket_consumer._msg_count += 1
+                        logger.info("Raw WS message sample", extra={"payload": payload})
+
+                    # Handle heartbeat — Crypto.com sends heartbeat every 30s
+                    if method == "public/heartbeat":
+                        heartbeat_response = json.dumps({
+                            "id": payload.get("id", int(time.time() * 1000)),
+                            "method": "public/respond-heartbeat",
+                        })
+                        await websocket.send(heartbeat_response)
                         continue
 
-                    if "@trade" in stream_name:
-                        state[symbol]["price"] = float(data.get("p", 0))
-                        state[symbol]["qty"] = float(data.get("q", 0))
-                        state[symbol]["side"] = "SELL" if data.get("m") else "BUY"
-                        state[symbol]["timestamp_ms"] = data.get("E", int(time.time() * 1000))
-                        await publish_tick(redis_client, symbol)
-                        
-                    elif "@bookTicker" in stream_name:
-                        bid = float(data.get("b", 0))
-                        ask = float(data.get("a", 0))
-                        state[symbol]["bid_price"] = bid
-                        state[symbol]["bid_qty"] = float(data.get("B", 0))
-                        state[symbol]["ask_price"] = ask
-                        state[symbol]["ask_qty"] = float(data.get("A", 0))
-                        state[symbol]["timestamp_ms"] = int(time.time() * 1000)
-                        if bid > 0 and ask > 0:
-                            mid = (bid + ask) / 2
-                            if state[symbol]["price"] <= 0:
-                                state[symbol]["price"] = mid
+                    # Skip subscribe confirmations and other non-data messages
+                    if method == "subscribe":
+                        code = payload.get("code", 0)
+                        if code != 0:
+                            logger.error("Subscribe failed", extra={"payload": payload})
+                        continue
+
+                    # Process market data
+                    result = payload.get("result", {})
+                    channel = result.get("channel", "")
+                    data_list = result.get("data", [])
+                    instrument_name = result.get("instrument_name", "")
+
+                    if not channel or not instrument_name:
+                        continue
+
+                    # Convert Crypto.com instrument name to internal key
+                    symbol = cryptocom_to_internal_symbol(instrument_name)
+
+                    if channel.startswith("trade."):
+                        # Trade data: list of trades
+                        for trade in data_list:
+                            state[symbol]["price"] = float(trade.get("p", 0))
+                            state[symbol]["qty"] = float(trade.get("q", 0))
+                            state[symbol]["side"] = trade.get("s", "UNKNOWN").upper()
+                            state[symbol]["timestamp_ms"] = int(
+                                trade.get("t", int(time.time() * 1000))
+                            )
                         await publish_tick(redis_client, symbol)
 
-                    elif "@depth20" in stream_name:
-                        # Orderbook level 20 for full snapshot if needed by other services
-                        depth = {
-                            "symbol": symbol.upper(),
-                            "bids": [[float(p), float(q)] for p, q in data.get("b", [])],
-                            "asks": [[float(p), float(q)] for p, q in data.get("a", [])],
-                            "timestamp": data.get("E", int(time.time() * 1000))
-                        }
-                        depth_json = json.dumps(depth)
-                        await redis_client.setex(f"orderbook:{symbol.upper()}", 10, depth_json)
-                        await redis_client.publish(f"orderbook:{symbol.upper()}", depth_json)
+                    elif channel.startswith("ticker."):
+                        # Ticker data: best bid/ask (replaces Binance bookTicker)
+                        for tick_data in data_list:
+                            bid = float(tick_data.get("b", 0))
+                            ask = float(tick_data.get("k", 0))
+                            bid_qty = float(tick_data.get("bs", 0))
+                            ask_qty = float(tick_data.get("ks", 0))
+                            state[symbol]["bid_price"] = bid
+                            state[symbol]["ask_price"] = ask
+                            state[symbol]["bid_qty"] = bid_qty
+                            state[symbol]["ask_qty"] = ask_qty
+                            state[symbol]["timestamp_ms"] = int(time.time() * 1000)
+                            if bid > 0 and ask > 0:
+                                mid = (bid + ask) / 2
+                                if state[symbol]["price"] <= 0:
+                                    state[symbol]["price"] = mid
+                            # Use last trade price if available
+                            last = float(tick_data.get("a", 0))
+                            if last > 0:
+                                state[symbol]["price"] = last
+                        await publish_tick(redis_client, symbol)
+
+                    elif channel.startswith("book."):
+                        # Order book depth snapshot
+                        for book_data in data_list:
+                            bids = book_data.get("bids", [])
+                            asks = book_data.get("asks", [])
+                            depth = {
+                                "symbol": symbol.upper(),
+                                "bids": [[float(entry[0]), float(entry[1])] for entry in bids],
+                                "asks": [[float(entry[0]), float(entry[1])] for entry in asks],
+                                "timestamp": int(book_data.get("t", int(time.time() * 1000))),
+                            }
+                            depth_json = json.dumps(depth)
+                            await redis_client.setex(
+                                f"orderbook:{symbol.upper()}", 10, depth_json
+                            )
+                            await redis_client.publish(
+                                f"orderbook:{symbol.upper()}", depth_json
+                            )
+                            # Update best bid/ask from book
+                            if bids:
+                                state[symbol]["bid_price"] = float(bids[0][0])
+                                state[symbol]["bid_qty"] = float(bids[0][1])
+                            if asks:
+                                state[symbol]["ask_price"] = float(asks[0][0])
+                                state[symbol]["ask_qty"] = float(asks[0][1])
 
         except Exception as e:
-            logger.error("WebSocket connection lost", extra={"error": str(e), "backoff_seconds": backoff})
+            logger.error(
+                "WebSocket connection lost",
+                extra={"error": str(e), "backoff_seconds": backoff},
+            )
             await asyncio.sleep(backoff)
             backoff = min(max_backoff, backoff * 2)
 
@@ -182,7 +318,7 @@ async def main():
     asyncio.create_task(heartbeat_publisher(redis_client))
 
     try:
-        await binance_websocket_consumer(redis_client)
+        await cryptocom_websocket_consumer(redis_client)
     finally:
         if tick_writer:
             await tick_writer.stop()

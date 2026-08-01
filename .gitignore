@@ -13,3 +13,6 @@ dist/
 
 # Build artifacts and Docker
 .DS_Store
+
+.agents
+

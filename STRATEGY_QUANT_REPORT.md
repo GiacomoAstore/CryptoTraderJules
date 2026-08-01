@@ -15,7 +15,7 @@
 | Bug critici | Chop su intera history; ATR tick-only ≈ 0; edge segnale in bps irrealistici | **Corretti** in `indicators.py`, `market_filters.py`, `strategy.py` |
 | Consensus | 2/8 | **3/8** (più selettivo) |
 | Trailing stop | No | Sì (`risk_manager` + `order_executor`) |
-| Harness valutazione | Assente | `scripts/strategy_eval.py` (Binance klines + fee/slippage) |
+| Harness valutazione | Assente | `scripts/strategy_eval.py` (Crypto.com klines + fee/slippage) |
 
 **Readiness stimata**
 
@@ -88,7 +88,7 @@ Ratio bid/(bid+ask) fisso → segnali spam.
 ## 4. Metriche offline (post-fix)
 
 **Setup:** `python scripts/strategy_eval.py --symbol BTCUSDT --bars 1500`  
-**Dati:** Binance 1m, espansione 12 tick/barra, libro skew leggero per test OBI.
+**Dati:** Crypto.com 1m, espansione 12 tick/barra, libro skew leggero per test OBI.
 
 ### BTCUSDT (strategie ancora abilitate al momento del test OBI)
 
@@ -183,4 +183,4 @@ set PYTHONPATH=shared_config && python -m pytest tests/test_validate_config.py -
 Il codice strategico precedente era **non pronto per live** (bias EMA, filtri rotti, assenza edge/fee). La nuova stack è **architetturalmente corretta** e allineata allo scalping crypto realistico, ma la **profittabilità non è dimostrata** sul proxy offline attuale.
 
 **Priorità assolute rispettate:** risk management e robustezza > backtest “belli”.  
-**Prossimo passo non negoziabile:** paper trading su WebSocket Binance reali prima di qualsiasi riabilitazione OBI / Bollinger / VolExpansion.
+**Prossimo passo non negoziabile:** paper trading su WebSocket Crypto.com reali prima di qualsiasi riabilitazione OBI / Bollinger / VolExpansion.

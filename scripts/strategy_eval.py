@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
 """
 Offline strategy evaluation with realistic friction (spread, fees, slippage).
-Uses Binance public klines when network available; falls back to synthetic data.
+Uses Crypto.com public candlestick data when network available; falls back to synthetic data.
+
 
   python scripts/strategy_eval.py
   python scripts/strategy_eval.py --symbol BTCUSDT --interval 1m --bars 2000
@@ -64,26 +64,57 @@ def build_strategies(cfg: dict) -> list:
 def fetch_klines(symbol: str, interval: str, limit: int) -> list[dict]:
     try:
         import httpx
+        import time
     except ImportError:
         return []
 
-    url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": interval, "limit": min(limit, 1000)}
-    with httpx.Client(timeout=20) as client:
-        r = client.get(url, params=params)
-        if r.status_code != 200:
-            return []
-        bars = []
-        for row in r.json():
-            bars.append({
-                "open": D(row[1]),
-                "high": D(row[2]),
-                "low": D(row[3]),
-                "close": D(row[4]),
-                "volume": D(row[5]),
-                "ts": int(row[0]),
-            })
-        return bars
+    # Convert Binance symbol format (e.g. BTCUSDT) to Crypto.com (e.g. BTC_USDT)
+    symbol_upper = symbol.upper()
+    if "_" not in symbol_upper:
+        for quote in ("USDT", "USDC", "USD", "BTC", "ETH", "CRO"):
+            if symbol_upper.endswith(quote) and len(symbol_upper) > len(quote):
+                base = symbol_upper[: -len(quote)]
+                symbol_upper = f"{base}_{quote}"
+                break
+        if "_" not in symbol_upper and len(symbol_upper) > 4:
+            symbol_upper = f"{symbol_upper[:-4]}_{symbol_upper[-4:]}"
+
+    url = "https://api.crypto.com/exchange/v1/public/get-candlestick"
+    body = {
+        "id": 1,
+        "method": "public/get-candlestick",
+        "params": {
+            "instrument_name": symbol_upper,
+            "timeframe": interval,
+            "count": min(limit, 300)
+        },
+        "nonce": int(time.time() * 1000)
+    }
+
+    try:
+        with httpx.Client(timeout=20) as client:
+            r = client.post(url, json=body)
+            if r.status_code != 200:
+                return []
+            data = r.json()
+            if data.get("code") != 0:
+                return []
+            
+            bars = []
+            result_data = data.get("result", {}).get("data", [])
+            for row in result_data:
+                bars.append({
+                    "open": D(str(row["o"])),
+                    "high": D(str(row["h"])),
+                    "low": D(str(row["l"])),
+                    "close": D(str(row["c"])),
+                    "volume": D(str(row["v"])),
+                    "ts": int(row["t"]),
+                })
+            return bars
+    except Exception:
+        return []
+
 
 
 def synthetic_bars(n: int, start: D = D("65000")) -> list[dict]:
@@ -104,15 +135,15 @@ def synthetic_bars(n: int, start: D = D("65000")) -> list[dict]:
 
 def bar_to_ticks(bar: dict, symbol: str, n_ticks: int = 12) -> list[dict]:
     """Expand 1m bar into synthetic ticks for microstructure strategies."""
-    spread = bar["close"] * D("0.00005")
-    bid = bar["close"] - spread / D("2")
-    ask = bar["close"] + spread / D("2")
     ticks = []
     step_ms = 60000 // n_ticks
     qty_each = bar["volume"] / D(str(n_ticks * 2))
     for i in range(n_ticks):
         frac = D(str(i + 1)) / D(str(n_ticks + 1))
         px = bar["low"] + (bar["high"] - bar["low"]) * frac
+        spread = px * D("0.00005")
+        bid = px - spread / D("2")
+        ask = px + spread / D("2")
         side = "BUY" if px >= bar["open"] else "SELL"
         bid_qty = D("14") if side == "BUY" else D("7")
         ask_qty = D("7") if side == "BUY" else D("14")
@@ -280,7 +311,7 @@ def main():
     )
 
     bars = fetch_klines(args.symbol, args.interval, args.bars)
-    data_src = "binance"
+    data_src = "cryptocom"
     if not bars:
         bars = synthetic_bars(args.bars)
         data_src = "synthetic"

@@ -1,4 +1,4 @@
-"""LOT_SIZE / MIN_NOTIONAL filters from exchangeInfo (Phase 2 scaffold)."""
+"""LOT_SIZE / MIN_NOTIONAL filters from Crypto.com get-instruments."""
 from __future__ import annotations
 
 from decimal import Decimal, ROUND_DOWN
@@ -7,25 +7,36 @@ from typing import Any
 D = Decimal
 
 
-class SymbolFilters:
-    def __init__(self, symbol: str, filters: list[dict[str, Any]]):
-        self.symbol = symbol.upper()
-        self.min_qty = D("0")
-        self.max_qty = D("999999")
-        self.step_size = D("0.00001")
-        self.min_notional = D("0")
-        self.tick_size = D("0.01")
+def binance_to_cryptocom_symbol(symbol: str) -> str:
+    """Convert Binance-style 'BTCUSDT' to Crypto.com-style 'BTC_USDT'.
 
-        for f in filters:
-            ft = f.get("filterType")
-            if ft == "LOT_SIZE":
-                self.min_qty = D(str(f["minQty"]))
-                self.max_qty = D(str(f["maxQty"]))
-                self.step_size = D(str(f["stepSize"]))
-            elif ft in ("MIN_NOTIONAL", "NOTIONAL"):
-                self.min_notional = D(str(f.get("minNotional") or f.get("notional", "0")))
-            elif ft == "PRICE_FILTER":
-                self.tick_size = D(str(f["tickSize"]))
+    Handles common quote currencies: USDT, USDC, USD, BTC, ETH, CRO.
+    """
+    symbol = symbol.upper()
+    if "_" in symbol:
+        return symbol
+
+    for quote in ("USDT", "USDC", "USD", "BTC", "ETH", "CRO"):
+        if symbol.endswith(quote) and len(symbol) > len(quote):
+            base = symbol[: -len(quote)]
+            return f"{base}_{quote}"
+    return f"{symbol[:-4]}_{symbol[-4:]}" if len(symbol) > 4 else symbol
+
+
+class SymbolFilters:
+    def __init__(self, symbol: str, instrument_data: dict[str, Any]):
+        self.symbol = symbol.upper()
+
+        qty_decimals = int(instrument_data.get("quantity_decimals", 5))
+        price_decimals = int(instrument_data.get("price_decimals", 2))
+
+        # Use actual tick sizes if present, fallback to decimals power of 10
+        self.step_size = D(str(instrument_data.get("qty_tick_size", 10 ** -qty_decimals)))
+        self.tick_size = D(str(instrument_data.get("price_tick_size", 10 ** -price_decimals)))
+
+        self.min_qty = self.step_size
+        self.max_qty = D("999999999.0")
+        self.min_notional = D("0.0")
 
     def round_qty(self, qty: D) -> D:
         if self.step_size <= 0:
@@ -52,8 +63,17 @@ class SymbolFilters:
         return True, "ok"
 
 
-def parse_symbol_filters(exchange_info: dict, symbol: str) -> SymbolFilters:
-    for s in exchange_info.get("symbols", []):
-        if s.get("symbol") == symbol.upper():
-            return SymbolFilters(symbol, s.get("filters", []))
-    raise KeyError(f"Symbol {symbol} not in exchangeInfo")
+def parse_symbol_filters(instruments_response: dict, symbol: str) -> SymbolFilters:
+    """Parse Crypto.com get-instruments response into SymbolFilters.
+
+    Crypto.com response structure:
+      {"data": [{"symbol": "BTC_USDT", "quantity_decimals": 4, ...}, ...]}
+    """
+    data_list = instruments_response.get("data", [])
+    target = binance_to_cryptocom_symbol(symbol).upper()
+    for inst in data_list:
+        if inst.get("symbol", "").upper() == target:
+            return SymbolFilters(symbol, inst)
+    raise KeyError(f"Symbol {symbol} (as {target}) not in get-instruments response")
+
+

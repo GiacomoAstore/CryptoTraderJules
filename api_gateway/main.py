@@ -46,18 +46,20 @@ def _resolve_security_config() -> tuple[str, str]:
     jwt_secret = os.getenv("JWT_SECRET", "")
     admin_password = os.getenv("ADMIN_PASSWORD", "")
 
+    weak_passwords = {"admin", "development", "password", "123456", "admin123", ""}
+
     if ENVIRONMENT == "production":
-        if not jwt_secret or jwt_secret == INSECURE_JWT_DEFAULT:
-            raise RuntimeError("JWT_SECRET must be set to a secure value when ENVIRONMENT=production")
-        if not admin_password:
-            raise RuntimeError("ADMIN_PASSWORD must be set when ENVIRONMENT=production")
+        if not jwt_secret or jwt_secret == INSECURE_JWT_DEFAULT or jwt_secret in weak_passwords:
+            raise RuntimeError("JWT_SECRET must be set to a strong, secure value when ENVIRONMENT=production")
+        if not admin_password or admin_password.lower() in weak_passwords:
+            raise RuntimeError("ADMIN_PASSWORD must be set to a strong, secure value when ENVIRONMENT=production")
         return jwt_secret, admin_password
 
-    if not jwt_secret:
-        logger.warning("JWT_SECRET not set; using insecure default (development only)")
+    if not jwt_secret or jwt_secret == INSECURE_JWT_DEFAULT:
+        logger.warning("JWT_SECRET not set or insecure; using default (development only)")
         jwt_secret = INSECURE_JWT_DEFAULT
-    if not admin_password:
-        logger.warning("ADMIN_PASSWORD not set; using default 'admin' (development only)")
+    if not admin_password or admin_password.lower() in weak_passwords:
+        logger.warning("ADMIN_PASSWORD not set or insecure; using default 'admin' (development only)")
         admin_password = "admin"
     return jwt_secret, admin_password
 
@@ -82,10 +84,10 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 from repository import TimescaleTradeRepository
-from binance_client import BinanceClient
+from exchange_client import ExchangeClient
 
 trade_repo = TimescaleTradeRepository()
-binance_client = BinanceClient()
+exchange_client = ExchangeClient()
 
 background_tasks = set()
 
@@ -237,7 +239,7 @@ def health_db():
 async def get_real_portfolio(user: str = Depends(get_current_user)):
     try:
         redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-        balances = await binance_client.get_real_portfolio()
+        balances = await exchange_client.get_real_portfolio()
         if isinstance(balances, dict) and "error" in balances:
             return {"status": "error", "message": balances["error"]}
             
