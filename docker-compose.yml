@@ -25,6 +25,7 @@ services:
         condition: service_healthy
     networks:
       - cryptoscalper_net
+    mem_limit: 512m
     restart: unless-stopped
 
   signal_engine:

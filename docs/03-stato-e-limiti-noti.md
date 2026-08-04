@@ -32,6 +32,7 @@ Il gate `NotImplementedError` in `order_executor/live_engine.py` e `order_execut
 
 ## 3. Bug Noti e Correzioni Architetturali Recenti
 
+* **Dashboard Login & Status Offline Resolution**: Risolto l'inghippo di autenticazione per cui la Dashboard visualizzava *"Login fallito: la password nel build non coincide con ADMIN_PASSWORD nel .env"* e *"System Offline"*. Il problema era causato dall'embedding a tempo di compilazione Vite (`VITE_ADMIN_PASSWORD`) nella build statica JS Nginx rispetto alla sovrascrittura di default a runtime in `_resolve_security_config()`. La correzione ha rimosso la sovrascrittura trasparentemente a runtime ed ha introdotto la resilienza di login lato sia backend che frontend React.
 * **Free Available Balance Sizing**: Risolto il bug per cui il risk manager calcolava l'esposizione notionale sulla base del capitale teorico senza considerare i fondi già impegnati su altre posizioni aperte (`max_open_positions: 2`), prevenendo rifiuti per `INSUFFICIENT_FUNDS`.
 * **Orphan Order Cleanup**: Aggiunto un ciclo di retry con alert critico su `system:alerts` (`ORPHAN_ORDER_CLEANUP_FAILED`) per garantire che la cancellazione dell'ordine TP/SL opposto non fallisca se l'exchange non risponde.
 * **Opposite Order Resizing**: Implementato il ridimensionamento automatico dell'ordine condizionale opposto in caso di esecuzione parziale (`PARTIALLY_FILLED`).

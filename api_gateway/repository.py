@@ -49,13 +49,27 @@ class TimescaleTradeRepository(TradeRepository):
             return [{"id": "mock-1", "symbol": "BTCUSDT", "side": "BUY", "price": 65000.0, "quantity": 0.01}]
         return []
 
+    def _format_trade(self, row) -> Dict[str, Any]:
+        d = dict(row)
+        if "price" not in d or d["price"] is None:
+            d["price"] = float(d.get("exit_price") or d.get("entry_price") or 0.0)
+        if "type" not in d:
+            d["type"] = d.get("side", "BUY")
+        if "timestamp" not in d and d.get("close_time"):
+            d["timestamp"] = int(d["close_time"].timestamp() * 1000)
+        elif "timestamp" not in d and d.get("created_at"):
+            d["timestamp"] = int(d["created_at"].timestamp() * 1000)
+        if "status" not in d:
+            d["status"] = d.get("close_reason", "FILLED")
+        return d
+
     async def get_recent_trades(self, limit: int = 50) -> List[Dict[str, Any]]:
         if not self.pool:
             return self._unavailable_trades()
 
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM trades ORDER BY time DESC LIMIT $1", limit)
-            return [dict(row) for row in rows]
+            rows = await conn.fetch("SELECT * FROM trades ORDER BY close_time DESC LIMIT $1", limit)
+            return [self._format_trade(row) for row in rows]
 
     async def get_trades_by_symbol(self, symbol: str, limit: int = 50) -> List[Dict[str, Any]]:
         if not self.pool:
@@ -65,8 +79,8 @@ class TimescaleTradeRepository(TradeRepository):
             return trades
 
         async with self.pool.acquire() as conn:
-            rows = await conn.fetch("SELECT * FROM trades WHERE symbol = $1 ORDER BY time DESC LIMIT $2", symbol, limit)
-            return [dict(row) for row in rows]
+            rows = await conn.fetch("SELECT * FROM trades WHERE symbol = $1 ORDER BY close_time DESC LIMIT $2", symbol, limit)
+            return [self._format_trade(row) for row in rows]
 
     async def get_tables(self) -> List[str]:
         if not self.pool:

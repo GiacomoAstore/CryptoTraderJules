@@ -29,6 +29,7 @@ function App() {
     total_value_usdt: 0,
     balances: []
   });
+  const [realPortfolioError, setRealPortfolioError] = useState(null);
 
   const [token, setToken] = useState(null);
   const [authError, setAuthError] = useState(null);
@@ -68,9 +69,15 @@ function App() {
       .then((data) => {
         if (data && data.status === 'ok') {
           setRealPortfolio(data);
+          setRealPortfolioError(null);
+        } else if (data && data.status === 'error') {
+          setRealPortfolioError(data.message || 'Errore API Crypto.com');
         }
       })
-      .catch((err) => console.error("Failed to fetch real portfolio:", err));
+      .catch((err) => {
+        console.error("Failed to fetch real portfolio:", err);
+        setRealPortfolioError(err.message || "Errore di connessione API Gateway");
+      });
   };
 
   const fetchSymbols = (jwt) => {
@@ -98,19 +105,18 @@ function App() {
       body: formData.toString()
     })
       .then(async (res) => {
-        const loginData = await res.json();
         if (!res.ok) {
-          throw new Error(loginData.detail || `Login failed (${res.status})`);
+          throw new Error(`HTTP ${res.status}`);
         }
-        return loginData;
+        return res.json();
       })
-      .then(loginData => {
-        if (loginData.access_token) {
-          setAuthError(null);
+      .then((loginData) => {
+        if (loginData && loginData.access_token) {
           setToken(loginData.access_token);
+          setAuthError(null);
+          fetchBotStatus(loginData.access_token);
           fetchTrades(loginData.access_token);
           fetchRealPortfolio(loginData.access_token);
-          fetchBotStatus(loginData.access_token);
           fetchSymbols(loginData.access_token);
 
           const ws = new WebSocket(wsUrl(`/ws/live?token=${loginData.access_token}`));
@@ -123,11 +129,11 @@ function App() {
           ws.onmessage = (event) => {
             try {
               const msg = JSON.parse(event.data);
-              if (msg.channel.startsWith('ticks:')) {
+              if (msg.channel && msg.channel.startsWith('ticks:')) {
                 setLatestTick(msg.data);
               } else if (msg.channel === 'executed_trades') {
                 setTrades(prev => [msg.data, ...prev].slice(0, 50));
-              } else if (msg.channel === 'system' && msg.data.bot_status !== undefined) {
+              } else if (msg.channel === 'system' && msg.data && msg.data.bot_status !== undefined) {
                 setBotEnabled(msg.data.bot_status === 'running');
               } else if (msg.channel === 'portfolio') {
                 setPortfolio(msg.data);
@@ -148,13 +154,10 @@ function App() {
       .catch(err => {
         console.error("Login failed:", err);
         setAuthError(
-          'Login fallito: la password nel build della dashboard non coincide con ADMIN_PASSWORD nel .env. ' +
-          'Esegui: docker compose build dashboard --no-cache && docker compose up -d dashboard'
+          'Login fallito: la password nel build della dashboard non coincide con ADMIN_PASSWORD nel .env.'
         );
       });
-
   }, []);
-
 
   const toggleBot = async () => {
     try {
@@ -319,12 +322,18 @@ function App() {
       <div className="portfolio-dashboard" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '20px', marginBottom: '32px' }}>
         <div className="glass-panel stat-card" style={{ gridColumn: '1 / -1', background: 'rgba(20, 25, 40, 0.7)', border: '1px solid var(--primary)' }}>
           <h3 style={{ color: 'var(--primary)' }}>Crypto.com Account (Read-Only)</h3>
-          <div style={{ marginBottom: '16px' }}>
-            <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>Total Value: </span>
-            <span style={{ fontSize: '2rem', fontWeight: 'bold', color: 'var(--text)' }}>
-              ${Number(realPortfolio.total_value_usdt).toFixed(2)}
-            </span>
-          </div>
+          {realPortfolioError ? (
+            <div style={{ color: 'var(--danger)', padding: '12px 16px', background: 'rgba(255, 75, 75, 0.1)', borderRadius: '8px', marginBottom: '16px', fontSize: '0.95rem' }}>
+              ⚠️ Errore API Crypto.com: {realPortfolioError}
+            </div>
+          ) : (
+            <div style={{ marginBottom: '16px' }}>
+              <span style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>Total Value: </span>
+              <span style={{ fontSize: '2rem', fontWeight: 'bold', color: 'var(--text)' }}>
+                ${Number(realPortfolio.total_value_usdt).toFixed(2)}
+              </span>
+            </div>
+          )}
           <table className="data-table">
             <thead>
               <tr>
@@ -346,7 +355,7 @@ function App() {
               {(!realPortfolio.balances || realPortfolio.balances.length === 0) && (
                 <tr>
                   <td colSpan="4" style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)' }}>
-                    No Crypto.com balances or API keys not configured.
+                    {realPortfolioError ? "Impossibile recuperare i saldi reali." : "Nessun saldo disponibile sul conto Crypto.com."}
                   </td>
                 </tr>
               )}
@@ -405,53 +414,33 @@ function App() {
         <table className="data-table">
           <thead>
             <tr>
-              <th>Symbol</th>
-              <th>Side</th>
-              <th>Price</th>
-              <th>Qty</th>
-              <th>Strategy</th>
-              <th>PnL</th>
               <th>Time</th>
+              <th>Symbol</th>
+              <th>Type</th>
+              <th>Price</th>
+              <th>Quantity</th>
+              <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            {trades.map((trade, i) => {
-              const tradeSymbol = trade.symbol || (trade.order && trade.order.symbol);
-              const side = trade.side || (trade.order && trade.order.type);
-              const price = trade.price || trade.executed_price || trade.exit_price || (trade.order && trade.order.price);
-              const quantity = trade.quantity || (trade.order && trade.order.quantity);
-              const variant = trade.ab_variant || 'A';
-
-              return (
-                <tr key={i}>
-                  <td style={{ fontWeight: 600 }}>
-                    {tradeSymbol} <span style={{ fontSize: '0.7rem', color: 'var(--primary)', border: '1px solid var(--primary)', padding: '1px 4px', borderRadius: '4px' }}>{variant}</span>
-                  </td>
-                  <td>
-                    <span className={side === 'BUY' ? 'tag-buy' : 'tag-sell'}>
-                      {side}
-                    </span>
-                  </td>
-                  <td style={{ fontFamily: 'monospace', fontSize: '1.1rem' }}>
-                    {price ? `$${Number(price).toFixed(price < 1 ? 4 : 2)}` : '$0.00'}
-                  </td>
-                  <td style={{ fontFamily: 'monospace' }}>
-                    {quantity ? Number(quantity).toFixed(quantity < 1 ? 6 : 2) : 'N/A'}
-                  </td>
-                  <td style={{ color: 'var(--text-muted)' }}>
-                    {trade.strategy_name || 'System'}
-                  </td>
-                  <td style={{ color: trade.pnl_usdt > 0 ? 'var(--success)' : (trade.pnl_usdt < 0 ? 'var(--danger)' : 'var(--text)') }}>
-                    {trade.pnl_usdt ? `$${Number(trade.pnl_usdt).toFixed(2)}` : '-'}
-                  </td>
-                  <td style={{ color: 'var(--text-muted)' }}>{trade.time ? new Date(trade.time).toLocaleTimeString() : '-'}</td>
-                </tr>
-              );
-            })}
+            {trades.map((t, i) => (
+              <tr key={i}>
+                <td>{new Date(t.timestamp || Date.now()).toLocaleTimeString()}</td>
+                <td style={{ fontWeight: 600 }}>{t.symbol}</td>
+                <td style={{ color: t.type === 'BUY' ? 'var(--success)' : 'var(--danger)' }}>{t.type}</td>
+                <td>${Number(t.price).toFixed(2)}</td>
+                <td>{Number(t.quantity).toFixed(4)}</td>
+                <td>
+                  <span className={`mode-badge ${t.status === 'FILLED' ? 'mode-live' : 'mode-paper'}`}>
+                    {t.status}
+                  </span>
+                </td>
+              </tr>
+            ))}
             {trades.length === 0 && (
               <tr>
-                <td colSpan="7" style={{ textAlign: 'center', padding: '32px', color: 'var(--text)' }}>
-                  No paper trades yet. Start the bot and wait for market conditions.
+                <td colSpan="6" style={{ textAlign: 'center', padding: '16px', color: 'var(--text-muted)' }}>
+                  No execution logs yet.
                 </td>
               </tr>
             )}

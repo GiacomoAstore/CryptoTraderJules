@@ -121,14 +121,21 @@ tick_writer: TickWriter | None = None
 
 async def publish_tick(redis_client, symbol: str):
     s = state[symbol]
-    if s["price"] <= 0 or s["bid_price"] <= 0 or s["ask_price"] <= 0:
-        return
+    if s["price"] <= 0:
+        if s["bid_price"] > 0 and s["ask_price"] > 0:
+            s["price"] = (s["bid_price"] + s["ask_price"]) / 2.0
+        else:
+            return
+    if s["bid_price"] <= 0:
+        s["bid_price"] = s["price"]
+    if s["ask_price"] <= 0:
+        s["ask_price"] = s["price"]
     tick: NormalizedTick = {
         "symbol": symbol.upper(),
         "price": s["price"],
         "qty": s["qty"],
         "side": s["side"],
-        "timestamp_ms": s["timestamp_ms"],
+        "timestamp_ms": s["timestamp_ms"] or int(time.time() * 1000),
         "bid_price": s["bid_price"],
         "ask_price": s["ask_price"],
         "bid_qty": s["bid_qty"],
@@ -170,7 +177,7 @@ async def cryptocom_websocket_consumer(redis_client):
     for inst in instruments:
         channels.append(f"trade.{inst}")
         channels.append(f"ticker.{inst}")
-        channels.append(f"book.{inst}.20")
+        channels.append(f"book.{inst}.10")
 
     backoff = 1
     max_backoff = 30
@@ -216,8 +223,8 @@ async def cryptocom_websocket_consumer(redis_client):
                         await websocket.send(heartbeat_response)
                         continue
 
-                    # Skip subscribe confirmations and other non-data messages
-                    if method == "subscribe":
+                    # Skip subscribe error confirmations (process if result is present)
+                    if method == "subscribe" and "result" not in payload:
                         code = payload.get("code", 0)
                         if code != 0:
                             logger.error("Subscribe failed", extra={"payload": payload})
@@ -235,7 +242,7 @@ async def cryptocom_websocket_consumer(redis_client):
                     # Convert Crypto.com instrument name to internal key
                     symbol = cryptocom_to_internal_symbol(instrument_name)
 
-                    if channel.startswith("trade."):
+                    if channel == "trade" or channel.startswith("trade.") or channel.startswith("trade"):
                         # Trade data: list of trades
                         for trade in data_list:
                             state[symbol]["price"] = float(trade.get("p", 0))
@@ -246,7 +253,7 @@ async def cryptocom_websocket_consumer(redis_client):
                             )
                         await publish_tick(redis_client, symbol)
 
-                    elif channel.startswith("ticker."):
+                    elif channel == "ticker" or channel.startswith("ticker.") or channel.startswith("ticker"):
                         # Ticker data: best bid/ask (replaces Binance bookTicker)
                         for tick_data in data_list:
                             bid = float(tick_data.get("b", 0))

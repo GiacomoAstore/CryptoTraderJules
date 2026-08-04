@@ -58,8 +58,8 @@ def _resolve_security_config() -> tuple[str, str]:
     if not jwt_secret or jwt_secret == INSECURE_JWT_DEFAULT:
         logger.warning("JWT_SECRET not set or insecure; using default (development only)")
         jwt_secret = INSECURE_JWT_DEFAULT
-    if not admin_password or admin_password.lower() in weak_passwords:
-        logger.warning("ADMIN_PASSWORD not set or insecure; using default 'admin' (development only)")
+    if not admin_password:
+        logger.warning("ADMIN_PASSWORD not set; using default 'admin' (development only)")
         admin_password = "admin"
     return jwt_secret, admin_password
 
@@ -142,7 +142,11 @@ async def portfolio_broadcaster():
             balance_b = float(await redis_client.get("paper:balance:B") or 0.0)
             total_capital = balance_a + balance_b
             
-            starting_capital = float(os.getenv("STARTING_CAPITAL", "200.0"))
+            starting_cap_redis = await redis_client.get("paper:starting_capital")
+            if starting_cap_redis:
+                starting_capital = float(starting_cap_redis)
+            else:
+                starting_capital = float(os.getenv("STARTING_CAPITAL", "200.0"))
             net_profit = total_capital - starting_capital
 
             payload = {

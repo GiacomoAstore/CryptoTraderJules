@@ -5,9 +5,10 @@
 ### `data_ingestion`
 * **Responsabilità**: Cattura ed armonizzazione dei dati di mercato in tempo reale direttamente dalle WebSocket ed API pubbliche di **Crypto.com Exchange**.
 * **Entry Point**: `data_ingestion/main.py`
-* **Dipendenze & Canali**: Connesso a `wss://stream.crypto.com/exchange/v1/market`, pubblica su Redis `ticks:{symbol}`. Le funzioni di conversione simbolo `binance_to_cryptocom_symbol` sono puri helper per retrocompatibilità interna delle chiavi.
+* **Dipendenze & Canali**: Connesso a `wss://stream.crypto.com/exchange/v1/market`, sottoscrive i canali `ticker.{symbol}`, `trade.{symbol}` e `book.{symbol}.10` (profondità 10), e pubblica su Redis `ticks:{symbol}`. Le funzioni di conversione simbolo `binance_to_cryptocom_symbol` sono puri helper per retrocompatibilità interna delle chiavi.
 * **File Principali**:
   * `data_ingestion/main.py`: Connessione WebSocket e normalizzazione tick.
+  * `data_ingestion/tick_writer.py`: Persistenza in batch su TimescaleDB.
 
 ### `signal_engine`
 * **Responsabilità**: Generazione dei segnali di trading sulla base degli indicatori tecnici e dei filtri di mercato.
@@ -32,7 +33,7 @@
 * **File Principali**:
   * `order_executor/main.py`: Dispatcher principale ed engine di simulazione Paper Trading.
   * `order_executor/live_engine.py`: Engine live reale con reconciliation loop a 15s, dual SL/TP tracking e gate `NotImplementedError`.
-  * `order_executor/cryptocom_rest.py`: Client REST con autenticazione HMAC SHA256 di Crypto.com.
+  * `order_executor/cryptocom_rest.py`: Client REST con autenticazione HMAC SHA256 di Crypto.com (`private/user-balance`).
   * `order_executor/exchange_rules.py`: Validazione `min_qty` e `min_notional` (`get-instruments`).
 
 ### `api_gateway` & `dashboard`
@@ -72,7 +73,7 @@
 Il sistema adotta la convenzione rigida `dominio:entita:attributo`:
 
 * **`paper:balance:A` / `paper:balance:B`**: Saldo USDT simulato in Paper Trading per la variante A e B.
-* **`live:balance:usdt`**: Saldo totale USDT letto da Crypto.com via `get_account_summary()`.
+* **`live:balance:usdt`**: Saldo totale USDT letto da Crypto.com via `private/user-balance`.
 * **`live:balance:free_usdt`**: Saldo libero USDT disponibile letto dall'exchange.
 * **`positions:active:{pos_key}`**: JSON rappresentante la posizione attiva in memoria (`{"symbol": "BTCUSDT", "ab_variant": "A", "entry_price": "65000.0", "quantity": "0.0015"}`).
 * **`risk:circuit_breaker`**: Hash Redis indicante lo stato di pausa del circuit breaker (`{"status": "open", "reason": "...", "until": "..."}`).
