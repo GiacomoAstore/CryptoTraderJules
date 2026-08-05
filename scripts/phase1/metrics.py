@@ -8,7 +8,6 @@ from typing import Any, Sequence
 STRATEGY_FAMILIES: dict[str, tuple[str, ...]] = {
     "EMA": ("EMACrossoverStrategy", "EMAStrategy", "EmaCrossover"),
     "Momentum": ("MomentumBurstStrategy", "Momentum"),
-    "VWAP": ("VWAPDeviationStrategy", "VWAP"),
 }
 
 

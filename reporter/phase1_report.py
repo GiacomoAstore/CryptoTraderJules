@@ -48,7 +48,9 @@ async def fetch_trades(conn) -> list[dict]:
         """
         SELECT time, id, symbol, side, entry_price, exit_price, quantity,
                pnl_usdt, pnl_pct, close_time, strategy_name, ab_variant, close_reason
-        FROM trades ORDER BY close_time ASC NULLS LAST, time ASC
+        FROM trades
+        WHERE time >= CURRENT_DATE AT TIME ZONE 'UTC'
+        ORDER BY close_time ASC NULLS LAST, time ASC
         """
     )
     return [dict(r) for r in rows]
@@ -107,8 +109,22 @@ async def fetch_infra(conn, redis_client) -> dict:
     out["risk_approved"] = int(await redis_client.get(f"risk:stats:approved:{hour_key}") or 0)
     out["risk_rejected_low_profit"] = int(await redis_client.get(f"risk:stats:rejected_low_profit:{hour_key}") or 0)
     out["risk_rejected_low_volatility"] = int(await redis_client.get(f"risk:stats:rejected_low_volatility:{hour_key}") or 0)
+    out["risk_rejected_max_pos"] = int(await redis_client.get(f"risk:stats:rejected_max_pos:{hour_key}") or 0)
+    out["risk_rejected_active_pos"] = int(await redis_client.get(f"risk:stats:rejected_active_position:{hour_key}") or 0)
+    out["risk_rejected_pending_order"] = int(await redis_client.get(f"risk:stats:rejected_pending_order:{hour_key}") or 0)
+    out["risk_rejected_circuit_breaker"] = int(await redis_client.get(f"risk:stats:rejected_circuit_breaker:{hour_key}") or 0)
+    out["risk_rejected_low_funds"] = int(await redis_client.get(f"risk:stats:rejected_low_funds:{hour_key}") or 0)
     out["risk_rejected_other"] = int(await redis_client.get(f"risk:stats:rejected_other:{hour_key}") or 0)
-    out["risk_rejected"] = out["risk_rejected_low_profit"] + out["risk_rejected_low_volatility"] + out["risk_rejected_other"]
+    out["risk_rejected"] = (
+        out["risk_rejected_low_profit"]
+        + out["risk_rejected_low_volatility"]
+        + out["risk_rejected_max_pos"]
+        + out["risk_rejected_active_pos"]
+        + out["risk_rejected_pending_order"]
+        + out["risk_rejected_circuit_breaker"]
+        + out["risk_rejected_low_funds"]
+        + out["risk_rejected_other"]
+    )
     out["risk_approved_pct"] = (out["risk_approved"] / out["risk_received"] * 100) if out["risk_received"] > 0 else 0.0
 
     # Pending Limit Order Stats (last 24h, keyed by today's date)
@@ -238,18 +254,20 @@ def format_telegram(report: dict, day_label: str) -> str:
         fallback_line = f"ATR fallback: ⚠️ {last_min:.0f} minuti" if last_min > 0 else "ATR fallback: ❌ Mai"
 
     cb_state = "open" if infra.get("circuit_open") else "closed"
+    n_trades = g.get('trades', 0)
+    stat_note = f"\nℹ️ Nota: n={n_trades} trade (campione ridotto, errore standard elevato)" if n_trades < 30 else ""
     lines = [
         f"📅 FASE 1 — Giorno {day_label} — {date}",
         "",
         "GLOBAL",
-        f"Trades: {g.get('trades', 0)} | PF: {_pf(g.get('profit_factor', 0)):.2f} (gate >{GATE_PF_MIN}, n>={GATE_MIN_TRADES})",
+        f"Trades: {n_trades} | PF: {_pf(g.get('profit_factor', 0)):.2f} (gate >{GATE_PF_MIN}, n>={GATE_MIN_TRADES}){stat_note}",
         f"Max DD: {g.get('max_drawdown_pct', 0):.1f}% (gate <{GATE_MAX_DD_PCT:.1f}%)",
         f"Win rate: {g.get('win_rate_pct', 0):.0f}% | E: {g.get('expectancy_bps', 0):.2f} bps",
         f"PnL: ${g.get('total_pnl_usdt', 0):.2f} | Equity paper: ${infra.get('paper_total_usdt', 0):.2f}",
         "",
         "STRATEGIE",
     ]
-    for family in ("EMA", "Momentum", "VWAP"):
+    for family in ("EMA", "Momentum"):
         lines.append(_strategy_line(family, report.get("by_strategy", {}).get(family, {})))
     lines.append(_strategy_line("Breakout1m", report.get("breakout_1m", {})))
     lines.extend([
@@ -263,9 +281,13 @@ def format_telegram(report: dict, day_label: str) -> str:
         f"Segnali ricevuti: {infra.get('risk_received', 0)}",
         f"Approvati: {infra.get('risk_approved', 0)} ({infra.get('risk_approved_pct', 0):.0f}%)",
         f"Rifiutati: {infra.get('risk_rejected', 0)}",
+        f"  → Max posizioni (2): {infra.get('risk_rejected_max_pos', 0)}",
+        f"  → Posizione attiva: {infra.get('risk_rejected_active_pos', 0)}",
+        f"  → Ordine pendente: {infra.get('risk_rejected_pending_order', 0)}",
         f"  → Low profitability: {infra.get('risk_rejected_low_profit', 0)}",
         f"  → Low volatility: {infra.get('risk_rejected_low_volatility', 0)}",
-        f"  → Altri: {infra.get('risk_rejected_other', 0)}",
+        f"  → Fondi insufficienti: {infra.get('risk_rejected_low_funds', 0)}",
+        f"  → Circuit breaker: {infra.get('risk_rejected_circuit_breaker', 0)}",
         f"ATR live: BTC={infra.get('atr_btc', 'N/A')} | ETH={infra.get('atr_eth', 'N/A')}",
         fallback_line,
         "",
@@ -299,7 +321,7 @@ async def build_report(*, update_gate: bool = True) -> dict:
         breakout_trades = [t for t in trades if (t.get("strategy_name") or "") == "Breakout1m"]
 
         by_strategy_report = {}
-        for family in ("EMA", "Momentum", "VWAP", "Consensus", "Other"):
+        for family in ("EMA", "Momentum", "Consensus", "Other"):
             st = compute_stats(by_family.get(family, []))
             d = st.to_dict()
             d["disabled"] = False

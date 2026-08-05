@@ -58,6 +58,7 @@ async def fetch_trades(conn) -> list[dict]:
         SELECT time, id, symbol, side, entry_price, exit_price, quantity,
                pnl_usdt, pnl_pct, close_time, strategy_name, ab_variant, close_reason
         FROM trades
+        WHERE time >= CURRENT_DATE AT TIME ZONE 'UTC'
         ORDER BY close_time ASC NULLS LAST, time ASC
         """
     )
@@ -183,7 +184,7 @@ def format_text(report: dict) -> str:
         "",
         "-- PER STRATEGY FAMILY --",
     ]
-    for family in ("EMA", "Momentum", "VWAP"):
+    for family in ("EMA", "Momentum"):
         s = report["by_strategy"][family]
         flag = " [!]" if s.get("disabled") else ""
         lines.append(
@@ -250,7 +251,7 @@ async def build_report(*, update_gate: bool = True) -> dict:
         global_stats = compute_stats(trades)
         by_family = group_by_family(trades)
         by_strategy_report = {}
-        for family in ("EMA", "Momentum", "VWAP", "Consensus", "Other"):
+        for family in ("EMA", "Momentum", "Consensus", "Other"):
             st = compute_stats(by_family.get(family, []))
             d = st.to_dict()
             d["disabled"] = False

@@ -287,8 +287,8 @@ class RiskManager:
 
         if await self.check_circuit_breaker():
             logger.warning("Signal rejected: Circuit breaker is OPEN.")
-            await self.redis_client.incr(f"risk:stats:rejected_other:{hour_key}")
-            await self.redis_client.expire(f"risk:stats:rejected_other:{hour_key}", 86400)
+            await self.redis_client.incr(f"risk:stats:rejected_circuit_breaker:{hour_key}")
+            await self.redis_client.expire(f"risk:stats:rejected_circuit_breaker:{hour_key}", 86400)
             return
 
         p = self.params
@@ -300,13 +300,18 @@ class RiskManager:
         total_tracked = len(self.open_positions) + len(self.pending_orders)
         if total_tracked >= p.max_open_positions and pos_key not in self.open_positions and pos_key not in self.pending_orders:
             logger.warning(f"Signal rejected: Max open positions reached ({p.max_open_positions})")
-            await self.redis_client.incr(f"risk:stats:rejected_other:{hour_key}")
-            await self.redis_client.expire(f"risk:stats:rejected_other:{hour_key}", 86400)
+            await self.redis_client.incr(f"risk:stats:rejected_max_pos:{hour_key}")
+            await self.redis_client.expire(f"risk:stats:rejected_max_pos:{hour_key}", 86400)
             return
-        if pos_key in self.open_positions or pos_key in self.pending_orders:
-            logger.warning(f"Signal rejected: Already tracked position/order for {pos_key}")
-            await self.redis_client.incr(f"risk:stats:rejected_other:{hour_key}")
-            await self.redis_client.expire(f"risk:stats:rejected_other:{hour_key}", 86400)
+        if pos_key in self.open_positions:
+            logger.warning(f"Signal rejected: Already active position for {pos_key}")
+            await self.redis_client.incr(f"risk:stats:rejected_active_position:{hour_key}")
+            await self.redis_client.expire(f"risk:stats:rejected_active_position:{hour_key}", 86400)
+            return
+        if pos_key in self.pending_orders:
+            logger.warning(f"Signal rejected: Already pending order for {pos_key}")
+            await self.redis_client.incr(f"risk:stats:rejected_pending_order:{hour_key}")
+            await self.redis_client.expire(f"risk:stats:rejected_pending_order:{hour_key}", 86400)
             return
 
         # --- ATR: 5m candle-based (from cache) or fallback ---
@@ -566,14 +571,32 @@ async def atr_updater_loop(rm: RiskManager, pool: asyncpg.Pool):
 
             if fallback_symbols:
                 logger.warning(
-                    "⚠️ ATR FALLBACK ACTIVE: insufficient 5m candles for: %s",
+                    "⚠️ ATR FALLBACK ACTIVE for %d symbols: %s",
+                    len(fallback_symbols),
                     ", ".join(fallback_symbols),
                 )
-                if fallback_start is None:
-                    fallback_start = time.time()
-                    await rm.redis_client.set("risk:atr_fallback_since", str(fallback_start))
+                # Global fallback is only active if NO symbols (or zero ready symbols) have real ATR
+                if len(ready_symbols) == 0:
+                    if fallback_start is None:
+                        fallback_start = time.time()
+                        await rm.redis_client.set("risk:atr_fallback_since", str(fallback_start))
+                else:
+                    # At least some symbols have real ATR — clear global fallback flag if it was set
+                    if fallback_start is None:
+                        redis_fallback = await rm.redis_client.get("risk:atr_fallback_since")
+                        if redis_fallback:
+                            try:
+                                fallback_start = float(redis_fallback)
+                            except ValueError:
+                                pass
+                    if fallback_start is not None:
+                        duration_sec = time.time() - fallback_start
+                        logger.info("✅ Global ATR cache recovered after %.0f seconds.", duration_sec)
+                        await rm.redis_client.set("risk:atr_last_fallback_duration_sec", str(int(duration_sec)))
+                        await rm.redis_client.delete("risk:atr_fallback_since")
+                        fallback_start = None
             else:
-                # All symbols have real ATR — if we were in fallback, log recovery
+                # All symbols have real ATR
                 if fallback_start is None:
                     redis_fallback = await rm.redis_client.get("risk:atr_fallback_since")
                     if redis_fallback:
