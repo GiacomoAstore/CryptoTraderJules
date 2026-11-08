@@ -6,21 +6,41 @@ from decimal import Decimal
 from typing import Any, Sequence
 
 STRATEGY_FAMILIES: dict[str, tuple[str, ...]] = {
+    "Momentum": ("MomentumBurstStrategy+EMARegime", "MomentumBurstStrategy", "Momentum"),
     "EMA": ("EMACrossoverStrategy", "EMAStrategy", "EmaCrossover"),
-    "Momentum": ("MomentumBurstStrategy", "Momentum"),
+    "Breakout": ("Breakout1m", "MicroStructureBreakoutStrategy", "Breakout"),
+    "OrderBook": ("OrderBookImbalanceStrategy", "OrderBook"),
+    "VWAP": ("VWAPDeviationStrategy", "VWAP"),
 }
 
 
 def family_from_strategy_name(name: str | None) -> str:
     if not name:
         return "Unknown"
-    upper = name.upper()
-    for family, tokens in STRATEGY_FAMILIES.items():
-        for t in tokens:
-            if t.upper() in upper or t.upper().replace("STRATEGY", "") in upper:
-                return family
+    
+    clean_name = name.strip()
+    upper = clean_name.upper()
+
+    # 1. Matching gerarchico ad alta precisione per nomi composti/specifici (evita falsi positivi da sottostringa)
+    if "MOMENTUMBURST" in upper:
+        return "Momentum"
+    if upper == "BREAKOUT1M" or "MICROSTRUCTUREBREAKOUT" in upper:
+        return "Breakout"
+    if "EMACROSSOVER" in upper or upper == "EMASTRATEGY":
+        return "EMA"
+    if "ORDERBOOK" in upper:
+        return "OrderBook"
+    if "VWAP" in upper:
+        return "VWAP"
     if "CONSENSUS" in upper:
         return "Consensus"
+
+    # 2. Match esatto sui token definiti in STRATEGY_FAMILIES
+    for family, tokens in STRATEGY_FAMILIES.items():
+        for t in tokens:
+            if t.upper() == upper:
+                return family
+
     return "Other"
 
 

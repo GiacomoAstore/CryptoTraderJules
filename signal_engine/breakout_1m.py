@@ -56,6 +56,8 @@ class Breakout1mEngine:
     async def process_tick(self, tick: dict[str, Any]) -> None:
         if not self.enabled:
             return
+        if await self.redis_client.get("phase1:disable:Breakout1m"):
+            return
 
         symbol = tick.get("symbol")
         if not symbol:

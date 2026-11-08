@@ -146,3 +146,212 @@ h1, h2, h3 {
   border: 1px solid var(--warning);
   background: rgba(245, 158, 11, 0.12);
 }
+
+.mode-live {
+  color: var(--success);
+  border: 1px solid var(--success);
+  background: rgba(16, 185, 129, 0.12);
+}
+
+/* ─── KPI Grid ─── */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+@media (max-width: 900px) {
+  .kpi-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 500px) {
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kpi-card {
+  position: relative;
+  overflow: hidden;
+}
+
+.kpi-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  border-radius: 16px 16px 0 0;
+}
+
+.kpi-card--capital::before { background: linear-gradient(90deg, #3b82f6, #8b5cf6); }
+.kpi-card--pnl-pos::before { background: linear-gradient(90deg, #10b981, #34d399); }
+.kpi-card--pnl-neg::before { background: linear-gradient(90deg, #ef4444, #f87171); }
+.kpi-card--trades::before { background: linear-gradient(90deg, #f59e0b, #fbbf24); }
+.kpi-card--risk-ok::before { background: linear-gradient(90deg, #10b981, #34d399); }
+.kpi-card--risk-alert::before { background: linear-gradient(90deg, #ef4444, #f97316); }
+
+.kpi-label {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: var(--text);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+
+.kpi-value {
+  font-size: 2rem;
+  font-weight: 700;
+  color: var(--text-h);
+  line-height: 1.1;
+}
+
+.kpi-value--sm {
+  font-size: 1.5rem;
+}
+
+.kpi-sub {
+  font-size: 0.85rem;
+  color: var(--text);
+  margin-top: 6px;
+}
+
+.kpi-sub span {
+  font-weight: 600;
+}
+
+/* ─── Status Badge ─── */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.status-badge--ok {
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.12);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  box-shadow: 0 0 12px rgba(16, 185, 129, 0.15);
+}
+
+.status-badge--alert {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  box-shadow: 0 0 12px rgba(239, 68, 68, 0.15);
+  animation: pulse-alert 2s infinite;
+}
+
+@keyframes pulse-alert {
+  0%, 100% { box-shadow: 0 0 12px rgba(239, 68, 68, 0.15); }
+  50% { box-shadow: 0 0 20px rgba(239, 68, 68, 0.35); }
+}
+
+/* ─── Status Row ─── */
+.status-row {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 24px;
+  flex-wrap: wrap;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.9rem;
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 10px;
+  background: rgba(30, 41, 59, 0.4);
+  border: 1px solid var(--border);
+}
+
+/* ─── PnL Colors in Tables ─── */
+.pnl-positive {
+  color: #10b981;
+  font-weight: 600;
+}
+
+.pnl-negative {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.pnl-zero {
+  color: var(--text);
+  font-weight: 500;
+}
+
+/* ─── Closed Trades Table Enhancements ─── */
+.strategy-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+  letter-spacing: 0.03em;
+}
+
+.close-reason-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.close-reason-tag--sl {
+  background: rgba(239, 68, 68, 0.12);
+  color: #f87171;
+}
+
+.close-reason-tag--tp {
+  background: rgba(16, 185, 129, 0.12);
+  color: #34d399;
+}
+
+.close-reason-tag--trailing {
+  background: rgba(139, 92, 246, 0.12);
+  color: #a78bfa;
+}
+
+.close-reason-tag--other {
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+}
+
+/* ─── Section Divider ─── */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.section-title h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.section-title .count-badge {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  font-weight: 600;
+}

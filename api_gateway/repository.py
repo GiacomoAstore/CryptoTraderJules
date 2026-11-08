@@ -205,7 +205,69 @@ class TimescaleTradeRepository(TradeRepository):
             return {
                 "total_pnl": float(row["total_pnl"] or 0),
                 "win_rate": float(row["win_rate"] or 0) * 100,
-                "max_drawdown": 0.0, # Complex calculation usually done via TimescaleDB window functions or pre-agg
+                "max_drawdown": 0.0,
                 "sharpe_ratio": 0.0,
                 "total_trades": int(row["total_trades"] or 0)
             }
+
+    async def get_today_performance(self) -> Dict[str, Any]:
+        if not self.pool:
+            return {
+                "trades_today": 0, "wins_today": 0, "losses_today": 0,
+                "win_rate_pct": 0.0, "total_pnl_today": 0.0,
+                "best_trade_pnl": 0.0, "worst_trade_pnl": 0.0,
+                "avg_pnl": 0.0,
+            }
+
+        async with self.pool.acquire() as conn:
+            row = await conn.fetchrow("""
+                SELECT
+                    COUNT(*) AS trades_today,
+                    SUM(CASE WHEN pnl_usdt > 0 THEN 1 ELSE 0 END) AS wins_today,
+                    SUM(CASE WHEN pnl_usdt < 0 THEN 1 ELSE 0 END) AS losses_today,
+                    COALESCE(SUM(pnl_usdt), 0) AS total_pnl_today,
+                    COALESCE(MAX(pnl_usdt), 0) AS best_trade_pnl,
+                    COALESCE(MIN(pnl_usdt), 0) AS worst_trade_pnl,
+                    COALESCE(AVG(pnl_usdt), 0) AS avg_pnl
+                FROM trades
+                WHERE time >= CURRENT_DATE AT TIME ZONE 'UTC'
+            """)
+
+            trades = int(row["trades_today"] or 0)
+            wins = int(row["wins_today"] or 0)
+            return {
+                "trades_today": trades,
+                "wins_today": wins,
+                "losses_today": int(row["losses_today"] or 0),
+                "win_rate_pct": round((wins / trades) * 100, 1) if trades > 0 else 0.0,
+                "total_pnl_today": round(float(row["total_pnl_today"] or 0), 4),
+                "best_trade_pnl": round(float(row["best_trade_pnl"] or 0), 4),
+                "worst_trade_pnl": round(float(row["worst_trade_pnl"] or 0), 4),
+                "avg_pnl": round(float(row["avg_pnl"] or 0), 4),
+            }
+
+    async def get_recent_closed_trades(self, limit: int = 10) -> List[Dict[str, Any]]:
+        if not self.pool:
+            return []
+
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""
+                SELECT time, symbol, side, entry_price, exit_price, quantity,
+                       pnl_usdt, pnl_pct, close_time, strategy_name, close_reason
+                FROM trades
+                WHERE time >= CURRENT_DATE AT TIME ZONE 'UTC'
+                ORDER BY close_time DESC NULLS LAST
+                LIMIT $1
+            """, limit)
+
+            result = []
+            for r in rows:
+                d = dict(r)
+                # Convert datetime to timestamp for JSON serialization
+                if d.get("close_time"):
+                    d["close_time_ms"] = int(d["close_time"].timestamp() * 1000)
+                if d.get("time"):
+                    d["time_ms"] = int(d["time"].timestamp() * 1000)
+                result.append(d)
+            return result
+

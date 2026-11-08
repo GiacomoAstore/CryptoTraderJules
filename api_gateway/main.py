@@ -132,6 +132,8 @@ async def startup_event():
 
 async def portfolio_broadcaster():
     redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
+    _perf_cache = {"data": None, "ts": 0}
+    import time as _time
     while True:
         try:
             await asyncio.sleep(1)
@@ -148,12 +150,45 @@ async def portfolio_broadcaster():
             else:
                 starting_capital = float(os.getenv("STARTING_CAPITAL", "200.0"))
             net_profit = total_capital - starting_capital
+            net_profit_pct = ((total_capital / starting_capital) - 1) * 100 if starting_capital > 0 else 0.0
+
+            # Circuit Breaker status
+            cb_state = await redis_client.hgetall("risk:circuit_breaker")
+            cb_status = cb_state.get("status", "closed") if cb_state else "closed"
+            cb_reason = cb_state.get("reason", "") if cb_state else ""
+
+            # Pending orders count
+            pending_keys = await redis_client.keys("order:pending:*")
+            pending_count = len(pending_keys)
+
+            # Today's performance (cached for 5 seconds to avoid DB hammering)
+            now_ts = _time.time()
+            if _perf_cache["data"] is None or (now_ts - _perf_cache["ts"]) > 5:
+                try:
+                    _perf_cache["data"] = await trade_repo.get_today_performance()
+                    _perf_cache["ts"] = now_ts
+                except Exception:
+                    if _perf_cache["data"] is None:
+                        _perf_cache["data"] = {"trades_today": 0, "win_rate_pct": 0.0, "total_pnl_today": 0.0}
+            today_perf = _perf_cache["data"]
 
             payload = {
                 "total_capital": total_capital,
                 "net_profit": net_profit,
-                "usdt_balance": total_capital, # Per semplicità nel paper trading
-                "holdings": [] # In paper trading non tracciamo holdings fisiche qui
+                "net_profit_pct": round(net_profit_pct, 2),
+                "starting_capital": starting_capital,
+                "usdt_balance": total_capital,
+                "holdings": [],
+                "circuit_breaker_status": cb_status,
+                "circuit_breaker_reason": cb_reason,
+                "pending_orders": pending_count,
+                "trades_today": today_perf.get("trades_today", 0),
+                "wins_today": today_perf.get("wins_today", 0),
+                "losses_today": today_perf.get("losses_today", 0),
+                "win_rate_today": today_perf.get("win_rate_pct", 0.0),
+                "pnl_today": today_perf.get("total_pnl_today", 0.0),
+                "best_trade": today_perf.get("best_trade_pnl", 0.0),
+                "worst_trade": today_perf.get("worst_trade_pnl", 0.0),
             }
             
             ws_msg = json.dumps({"channel": "portfolio", "data": payload})
@@ -353,9 +388,30 @@ async def get_performance_summary(user: str = Depends(get_current_user)):
     summary["status"] = "ok"
     return summary
 
+@app.get("/api/performance/today")
+async def get_performance_today(user: str = Depends(get_current_user)):
+    today = await trade_repo.get_today_performance()
+    today["status"] = "ok"
+    return today
+
 @app.get("/api/performance/daily")
 async def get_performance_daily(user: str = Depends(get_current_user)):
     return {"status": "ok", "daily": []}
+
+@app.get("/api/trades/closed/today")
+async def get_closed_trades_today(limit: int = 15, user: str = Depends(get_current_user)):
+    trades = await trade_repo.get_recent_closed_trades(limit=limit)
+    # Serialize datetime objects for JSON
+    serialized = []
+    for t in trades:
+        row = {}
+        for k, v in t.items():
+            if hasattr(v, 'isoformat'):
+                row[k] = v.isoformat()
+            else:
+                row[k] = v
+        serialized.append(row)
+    return {"status": "ok", "trades": serialized}
 
 @app.get("/api/db/tables")
 async def get_db_tables(user: str = Depends(get_current_user)):

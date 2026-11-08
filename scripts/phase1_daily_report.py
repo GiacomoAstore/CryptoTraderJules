@@ -65,6 +65,21 @@ async def fetch_trades(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+async def fetch_trades_rolling(conn, hours: int = 168) -> list[dict]:
+    """Fetch trades over a rolling window (default 168h / 7 days) for strategy guard evaluation."""
+    rows = await conn.fetch(
+        """
+        SELECT time, id, symbol, side, entry_price, exit_price, quantity,
+               pnl_usdt, pnl_pct, close_time, strategy_name, ab_variant, close_reason
+        FROM trades
+        WHERE time >= (NOW() - ($1 || ' hours')::INTERVAL)
+        ORDER BY close_time ASC NULLS LAST, time ASC
+        """,
+        str(hours),
+    )
+    return [dict(r) for r in rows]
+
+
 async def fetch_infra(conn, redis_client) -> dict:
     out: dict = {}
     hb = await redis_client.get("ingestion:heartbeat")
@@ -140,6 +155,7 @@ async def apply_strategy_guard(redis_client, by_family: dict) -> list[str]:
     name_map = {
         "EMA": "EMACrossoverStrategy",
         "Momentum": "MomentumBurstStrategy",
+        "Breakout": "Breakout1m",
         "VWAP": "VWAPDeviationStrategy",
     }
     for family, strat_name in name_map.items():
@@ -260,7 +276,9 @@ async def build_report(*, update_gate: bool = True) -> dict:
                     d["disabled"] = True
             by_strategy_report[family] = d
 
-        strategy_actions = await apply_strategy_guard(redis_client, by_family)
+        trades_rolling = await fetch_trades_rolling(conn, hours=168)
+        by_family_rolling = group_by_family(trades_rolling)
+        strategy_actions = await apply_strategy_guard(redis_client, by_family_rolling)
 
         infra_notes = []
         infra_clean = True
